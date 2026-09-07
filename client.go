@@ -3,6 +3,7 @@ package bonum
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +53,11 @@ func WithTimeout(d time.Duration) Option {
 	return func(c *Client) { c.http.SetTimeout(d) }
 }
 
+// WithTransport replaces the HTTP transport, e.g. to record outbound calls.
+func WithTransport(rt http.RoundTripper) Option {
+	return func(c *Client) { c.http.SetTransport(rt) }
+}
+
 // New creates a Client. appSecret and terminalID come from the Bonum merchant portal.
 func New(env types.Environment, appSecret, terminalID string, opts ...Option) *Client {
 	c := &Client{
@@ -59,7 +65,7 @@ func New(env types.Environment, appSecret, terminalID string, opts ...Option) *C
 		appSecret:  appSecret,
 		terminalID: terminalID,
 		lang:       types.MN,
-		http:       resty.New().SetTimeout(30 * time.Second).SetAllowMethodDeletePayload(true),
+		http:       resty.New().SetTimeout(30 * time.Second).SetMethodDeleteAllowPayload(true),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -108,7 +114,7 @@ func (c *Client) do(req *resty.Request, method, path string, result any) error {
 	if err != nil {
 		return err
 	}
-	if res.IsError() {
+	if res.StatusCode() >= http.StatusBadRequest {
 		return newError(res)
 	}
 	return nil
