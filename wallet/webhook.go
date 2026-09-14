@@ -1,6 +1,10 @@
 package wallet
 
-import "github.com/techpartners-asia/bonum-go/internal/wallet/domain/webhook"
+import (
+	"time"
+
+	"github.com/techpartners-asia/bonum-go/internal/wallet/domain/webhook"
+)
 
 // Sentinel errors for webhook verification. Match them with errors.Is.
 var (
@@ -29,4 +33,11 @@ func Sign(body []byte, timestamp, secret string) string { return webhook.Sign(bo
 // hash. Rejections are ErrMissingSignature, ErrTimestampExpired or ErrSignatureMismatch.
 func ParseWebhook(body []byte, signature, timestamp, secret string) (*WebhookEvent, error) {
 	return webhook.Parse(body, signature, timestamp, secret)
+}
+
+// ParseWebhookAt is ParseWebhook with the replay-tolerance check evaluated against now
+// instead of the wall clock. Use it to replay a stored delivery against its original
+// OccurredAt rather than have ReplayTolerance reject it for arriving "late".
+func ParseWebhookAt(body []byte, signature, timestamp, secret string, now time.Time) (*WebhookEvent, error) {
+	return webhook.ParseAt(body, signature, timestamp, secret, now)
 }

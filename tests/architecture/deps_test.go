@@ -58,11 +58,27 @@ func allowed(ctx, layer, imp string) bool {
 	if isStdlib(imp) {
 		return true
 	}
+	if imp == module {
+		// The bare module path names the gateway facade package itself. Nothing inside
+		// this module has a legitimate reason to import it: a file in that package
+		// importing itself is a compile error Go already catches, and any other file
+		// importing it would be a same-module import of the other context's facade -
+		// exactly the coupling this rule exists to forbid. strings.CutPrefix below never
+		// matches this exact string (there is no trailing "/"), so it needs its own check.
+		return false
+	}
 	rel, isModuleInternal := strings.CutPrefix(imp, module+"/")
 	if !isModuleInternal {
 		return layer == "adapters" || layer == "facade"
 	}
-	// Neither context may reach the other's internal tree or facade package.
+	// Neither context may reach the other's internal tree or facade package. Of the four
+	// checks below, only `rel == "wallet"` (the bare wallet facade import) and the
+	// `internal/<other>` ones currently match anything real: gateway's facade is the
+	// module root (imp == module, handled above, not a "<other>/..." string), and neither
+	// context has any package left directly under gateway/ or wallet/ since the internal/
+	// move - domain/ports/application/adapters all live under internal/<ctx>/ now. The
+	// other+"/" prefix check stays as a guard against a future package added directly
+	// under gateway/ or wallet/ without going through internal/.
 	for _, other := range contexts {
 		if other == ctx {
 			continue
@@ -148,6 +164,9 @@ func TestRuleCatchesViolations(t *testing.T) {
 		{"gateway", "facade", module + "/wallet"},
 		{"wallet", "facade", module + "/internal/gateway/domain"},
 		{"gateway", "application", module + "/internal/wallet/application/commands/payment"},
+		{"wallet", "facade", module},
+		{"wallet", "adapters", module},
+		{"gateway", "adapters", module},
 	}
 	for _, b := range bad {
 		if allowed(b.ctx, b.layer, b.imp) {

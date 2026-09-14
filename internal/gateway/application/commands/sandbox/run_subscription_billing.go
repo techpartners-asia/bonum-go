@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain"
 	"github.com/techpartners-asia/bonum-go/internal/gateway/ports"
 )
 
@@ -16,5 +17,8 @@ func NewRunSubscriptionBillingHandler(api ports.SandboxAPI) *RunSubscriptionBill
 }
 
 func (h *RunSubscriptionBillingHandler) Handle(ctx context.Context, cmd RunSubscriptionBillingCommand) error {
+	if cmd.ID <= 0 {
+		return domain.Invalid("id", "required")
+	}
 	return h.api.RunSubscriptionBilling(ctx, cmd.ID)
 }

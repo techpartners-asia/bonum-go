@@ -114,6 +114,55 @@ func TestQR(t *testing.T) {
 	}
 }
 
+func TestScalarArgsAreRequired(t *testing.T) {
+	f := &fakeAPI{}
+	cards := application.NewCards(f)
+	if err := cards.Reverse(ctx, "", "T1"); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("reverse empty cardToken: %v", err)
+	}
+	if err := cards.Reverse(ctx, "tok", ""); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("reverse empty transactionID: %v", err)
+	}
+
+	subs := application.NewSubscriptions(f)
+	if _, err := subs.List(ctx, ""); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("list empty cardToken: %v", err)
+	}
+	if _, err := subs.ChangeCard(ctx, 0, "tok"); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("change card zero id: %v", err)
+	}
+	if _, err := subs.ChangeCard(ctx, 7, ""); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("change card empty cardToken: %v", err)
+	}
+	if err := subs.Unsubscribe(ctx, 0, 30); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("unsubscribe zero id: %v", err)
+	}
+	if err := subs.Unsubscribe(ctx, 42, 0); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("unsubscribe zero planID: %v", err)
+	}
+	if err := subs.Delete(ctx, 0, 30); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("delete zero id: %v", err)
+	}
+	if err := subs.Delete(ctx, 42, 0); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("delete zero planID: %v", err)
+	}
+
+	sb := application.NewSandbox(f)
+	if _, err := sb.InvoiceStatus(ctx, ""); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("invoice status empty id: %v", err)
+	}
+	if err := sb.MarkInvoicePaid(ctx, ""); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("mark paid empty id: %v", err)
+	}
+	if err := sb.RunSubscriptionBilling(ctx, 0); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("run billing zero id: %v", err)
+	}
+
+	if len(f.calls) != 0 {
+		t.Fatal("invalid scalar args must not reach the port")
+	}
+}
+
 func TestSandboxAndAccessDelegate(t *testing.T) {
 	f := &fakeAPI{}
 	sb := application.NewSandbox(f)

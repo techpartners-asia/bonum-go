@@ -3,6 +3,7 @@ package card
 
 import (
 	"errors"
+	"strconv"
 
 	"github.com/techpartners-asia/bonum-go/internal/gateway/domain"
 	"github.com/techpartners-asia/bonum-go/internal/gateway/domain/checkout"
@@ -74,6 +75,27 @@ func (in TokenizeInput) Validate() error {
 		return domain.Invalid("Callback", "required")
 	case in.TransactionID == "":
 		return domain.Invalid("TransactionID", "required")
+	}
+	if in.Subscription != nil {
+		return in.Subscription.validate()
+	}
+	return nil
+}
+
+// validate applies the same coarse range SubscribeInput uses for CycleValue (1-366, the
+// union of the weekly/monthly/yearly ranges): the exact valid range depends on the
+// referenced Plan's RecurringType, which only Bonum knows, so this can only catch what is
+// invalid for every plan type. PayNow ignores CycleValue entirely, matching SubscribeInput.
+func (s TokenizeSubscription) validate() error {
+	if s.PlanID <= 0 {
+		return domain.Invalid("Subscription.PlanID", "required")
+	}
+	if s.PayNow {
+		return nil
+	}
+	n, err := strconv.Atoi(s.CycleValue)
+	if err != nil || n < 1 || n > 366 {
+		return domain.Invalid("Subscription.CycleValue", "must be 1-7 weekly, 1-31 monthly or 1-366 yearly")
 	}
 	return nil
 }

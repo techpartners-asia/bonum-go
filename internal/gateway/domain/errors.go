@@ -47,6 +47,11 @@ func (e *APIError) Is(target error) bool {
 }
 
 // ValidationError is returned before any network call when an input violates an invariant.
+// Field names the invalid Go struct field verbatim (e.g. "TransactionID") when the check is
+// on an input struct's own field, since Validate() is itself part of the public API and
+// every aggregate's *Input type documents its own Validate(); it is a lowerCamelCase
+// parameter name (e.g. "cardToken") when the check is on a bare scalar argument that has no
+// struct field of its own. Match on the sentinel with errors.Is, not on this string.
 type ValidationError struct {
 	Field  string
 	Reason string

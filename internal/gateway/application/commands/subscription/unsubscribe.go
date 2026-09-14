@@ -3,6 +3,7 @@ package subscription
 import (
 	"context"
 
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain"
 	"github.com/techpartners-asia/bonum-go/internal/gateway/ports"
 )
 
@@ -19,5 +20,11 @@ func NewUnsubscribeHandler(api ports.SubscriptionAPI) *UnsubscribeHandler {
 }
 
 func (h *UnsubscribeHandler) Handle(ctx context.Context, cmd UnsubscribeCommand) error {
+	if cmd.ID <= 0 {
+		return domain.Invalid("id", "required")
+	}
+	if cmd.PlanID <= 0 {
+		return domain.Invalid("planID", "required")
+	}
 	return h.api.Unsubscribe(ctx, cmd.ID, cmd.PlanID)
 }

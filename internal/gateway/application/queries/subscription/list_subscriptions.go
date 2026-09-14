@@ -3,6 +3,7 @@ package subscription
 import (
 	"context"
 
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain"
 	"github.com/techpartners-asia/bonum-go/internal/gateway/domain/subscription"
 	"github.com/techpartners-asia/bonum-go/internal/gateway/ports"
 )
@@ -17,5 +18,8 @@ func NewListSubscriptionsHandler(api ports.SubscriptionAPI) *ListSubscriptionsHa
 }
 
 func (h *ListSubscriptionsHandler) Handle(ctx context.Context, q ListSubscriptionsQuery) ([]subscription.Subscription, error) {
+	if q.CardToken == "" {
+		return nil, domain.Invalid("cardToken", "required")
+	}
 	return h.api.ListSubscriptions(ctx, q.CardToken)
 }

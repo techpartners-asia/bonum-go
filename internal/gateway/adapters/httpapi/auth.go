@@ -97,7 +97,11 @@ func (t *tokenSource) exchange(req *resty.Request, path string) (*access.TokenPa
 }
 
 // CreateToken forces a fresh TokenPair via auth/create.
-func (c *Client) CreateToken(ctx context.Context) (*access.TokenPair, error) { return c.tokens.create(ctx) }
+func (c *Client) CreateToken(ctx context.Context) (*access.TokenPair, error) {
+	return c.tokens.create(ctx)
+}
 
 // RefreshToken exchanges the cached refresh token via auth/refresh.
-func (c *Client) RefreshToken(ctx context.Context) (*access.TokenPair, error) { return c.tokens.refresh(ctx) }
+func (c *Client) RefreshToken(ctx context.Context) (*access.TokenPair, error) {
+	return c.tokens.refresh(ctx)
+}

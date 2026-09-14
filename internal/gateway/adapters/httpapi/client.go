@@ -1,5 +1,5 @@
 // Package httpapi is the Gateway's outbound HTTP adapter. It implements every interface in
-// gateway/ports against Bonum's gateway endpoints and owns everything transport-specific:
+// internal/gateway/ports against Bonum's gateway endpoints and owns everything transport-specific:
 // the bearer token lifecycle, common headers, the mpay-service envelope and error decoding.
 package httpapi
 

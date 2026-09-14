@@ -3,6 +3,8 @@ package wallet_test
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -193,6 +195,25 @@ func TestAwaitURLUsesReturnedAbsoluteURL(t *testing.T) {
 	}
 	if r.Status != wallet.StatusFailed || f.lastReq.Load().Header.Get("x-merchant-key") != "mk_test_123" {
 		t.Fatalf("unexpected %+v", r)
+	}
+}
+
+func TestAwaitURLRejectsAnUnrelatedHost(t *testing.T) {
+	f, c := newFakePSP(t)
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	t.Cleanup(other.Close)
+
+	if _, err := c.AwaitURL(ctx, other.URL+"/api/v2/payments/x/await", time.Second); !errors.Is(err, wallet.ErrInvalidInput) {
+		t.Fatalf("want ErrInvalidInput for a mismatched host, got %v", err)
+	}
+	if f.lastReq.Load() != nil {
+		t.Fatal("a rejected host must never receive the merchant-key header")
+	}
+
+	if _, err := c.AwaitURL(ctx, "not-a-url", time.Second); !errors.Is(err, wallet.ErrInvalidInput) {
+		t.Fatalf("want ErrInvalidInput for a non-absolute URL, got %v", err)
 	}
 }
 

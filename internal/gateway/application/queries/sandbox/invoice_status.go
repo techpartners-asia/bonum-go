@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain"
 	"github.com/techpartners-asia/bonum-go/internal/gateway/ports"
 )
 
@@ -19,5 +20,8 @@ func NewInvoiceStatusHandler(api ports.SandboxAPI) *InvoiceStatusHandler {
 }
 
 func (h *InvoiceStatusHandler) Handle(ctx context.Context, q InvoiceStatusQuery) (json.RawMessage, error) {
+	if q.InvoiceID == "" {
+		return nil, domain.Invalid("invoiceID", "required")
+	}
 	return h.api.InvoiceStatus(ctx, q.InvoiceID)
 }

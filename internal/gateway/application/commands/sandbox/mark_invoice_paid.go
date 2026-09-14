@@ -5,6 +5,7 @@ package sandbox
 import (
 	"context"
 
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain"
 	"github.com/techpartners-asia/bonum-go/internal/gateway/ports"
 )
 
@@ -18,5 +19,8 @@ func NewMarkInvoicePaidHandler(api ports.SandboxAPI) *MarkInvoicePaidHandler {
 }
 
 func (h *MarkInvoicePaidHandler) Handle(ctx context.Context, cmd MarkInvoicePaidCommand) error {
+	if cmd.InvoiceID == "" {
+		return domain.Invalid("invoiceID", "required")
+	}
 	return h.api.MarkInvoicePaid(ctx, cmd.InvoiceID)
 }

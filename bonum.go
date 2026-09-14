@@ -85,7 +85,9 @@ func (c *Client) Close() error { return c.api.Close() }
 
 // Authenticate forces a fresh TokenPair via auth/create. Normally unnecessary: every call
 // obtains a token on demand. The endpoint is rate limited; do not call it in a loop.
-func (c *Client) Authenticate(ctx context.Context) (*TokenPair, error) { return c.access.Authenticate(ctx) }
+func (c *Client) Authenticate(ctx context.Context) (*TokenPair, error) {
+	return c.access.Authenticate(ctx)
+}
 
 // Refresh exchanges the cached refresh token for a new access token via auth/refresh.
 func (c *Client) Refresh(ctx context.Context) (*TokenPair, error) { return c.access.Refresh(ctx) }

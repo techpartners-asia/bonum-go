@@ -23,6 +23,44 @@ func TestTokenizeInputValidate(t *testing.T) {
 	}
 }
 
+func TestTokenizeInputValidatesSubscription(t *testing.T) {
+	base := card.TokenizeInput{Callback: "https://m/cb", TransactionID: "T1"}
+
+	valid := []card.TokenizeSubscription{
+		{PlanID: 30, CycleValue: "1"},
+		{PlanID: 30, CycleValue: "366"},
+		{PlanID: 30, PayNow: true}, // CycleValue ignored when PayNow
+	}
+	for i, sub := range valid {
+		in := base
+		in.Subscription = &sub
+		if err := in.Validate(); err != nil {
+			t.Fatalf("case %d: %v", i, err)
+		}
+	}
+
+	for field, sub := range map[string]card.TokenizeSubscription{
+		"Subscription.PlanID":     {CycleValue: "1"},
+		"Subscription.CycleValue": {PlanID: 30, CycleValue: "0"},
+	} {
+		in := base
+		in.Subscription = &sub
+		var v *domain.ValidationError
+		if err := in.Validate(); !errors.As(err, &v) || v.Field != field {
+			t.Fatalf("%s: got %v", field, err)
+		}
+	}
+
+	for _, bad := range []string{"367", "", "not-a-number"} {
+		in := base
+		in.Subscription = &card.TokenizeSubscription{PlanID: 30, CycleValue: bad}
+		var v *domain.ValidationError
+		if err := in.Validate(); !errors.As(err, &v) || v.Field != "Subscription.CycleValue" {
+			t.Fatalf("CycleValue=%q: got %v", bad, err)
+		}
+	}
+}
+
 func TestPurchaseInputValidate(t *testing.T) {
 	if err := (card.PurchaseInput{Amount: 1, Currency: "MNT", TransactionID: "T1"}).Validate(); err != nil {
 		t.Fatal(err)

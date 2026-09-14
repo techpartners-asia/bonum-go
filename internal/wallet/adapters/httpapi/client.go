@@ -1,14 +1,16 @@
-// Package httpapi is the Wallet's outbound HTTP adapter: it implements wallet/ports against
-// Bonum's V2 endpoints and owns the merchant-key header, timeouts and error decoding.
+// Package httpapi is the Wallet's outbound HTTP adapter: it implements internal/wallet/ports
+// against Bonum's V2 endpoints and owns the merchant-key header, timeouts and error decoding.
 package httpapi
 
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
 	"github.com/techpartners-asia/bonum-go/internal/rest"
+	"github.com/techpartners-asia/bonum-go/internal/wallet/domain"
 	"github.com/techpartners-asia/bonum-go/internal/wallet/domain/payment"
 	"github.com/techpartners-asia/bonum-go/internal/wallet/ports"
 	"resty.dev/v3"
@@ -65,7 +67,31 @@ func (c *Client) AwaitPayment(ctx context.Context, paymentID string, timeout tim
 }
 
 func (c *Client) AwaitURL(ctx context.Context, awaitURL string, timeout time.Duration) (*payment.AwaitResult, error) {
+	if err := c.checkSameHost(awaitURL); err != nil {
+		return nil, err
+	}
 	return call[payment.AwaitResult](ctx, c, http.MethodGet, awaitURL, awaitTimeout(timeout))
+}
+
+// checkSameHost guards the merchant-key header against being sent to an arbitrary host.
+// The caller is expected to relay Bonum's own awaitUrl from ProcessResponse verbatim, which
+// always resolves to the configured environment's host; call() attaches MerchantKeyHeader to
+// every request regardless of path, so an unrelated absolute URL here would leak it. This
+// check needs the adapter's configured base URL, which is runtime state the application
+// layer's input validation (the non-empty check) does not have access to.
+func (c *Client) checkSameHost(rawURL string) error {
+	given, err := url.Parse(rawURL)
+	if err != nil || given.Scheme == "" || given.Host == "" {
+		return domain.Invalid("awaitURL", "must be an absolute URL")
+	}
+	base, err := url.Parse(c.rest.BaseURL())
+	if err != nil {
+		return nil // configured base URL is malformed; nothing to compare against
+	}
+	if given.Scheme != base.Scheme || given.Host != base.Host {
+		return domain.Invalid("awaitURL", "host must match the configured environment")
+	}
+	return nil
 }
 
 type reqOpt func(*resty.Request)
