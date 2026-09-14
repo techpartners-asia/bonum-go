@@ -228,7 +228,7 @@ What exists instead:
 | 2 | Pay-by-token host | `PUT {{TOKEN_BASE_URL}}/merchant/transaction/qr/pay`; `TOKEN_BASE_URL` is never defined [C: QR › Pay By Card Token; collection description] | `PUT /merchant/transaction/qr/pay` [W: bonum-gateway-apis.html] | `{API_BASE_URL}/mpay-service/merchant/transaction/qr/pay` — an assumption [S: qr.go] | sandbox call; ask Bonum for `TOKEN_BASE_URL` |
 | 3 | Inferred / raw response shapes | no examples for `RollbackPurchase`, `Unsubscribe`, `DeleteSubscription`, `GetSubscriptions`, `InvoiceByQrCode`, `PayByCardToken`, `ChangeSubscriptionToken*` [C: those items] | — | marked in `types/` [S: types/cardtoken.go, types/subscription.go, types/qr.go] | capture sandbox bodies, tighten types |
 | 4 | Refresh response | no example; test script checks `accessToken` only [C: Authentication › Refresh token] | example shows the same fields as create [W: bonum-gateway-apis.html#authentication] | decoded as `AuthResponse`; missing `refreshToken` keeps the old one [S: auth.go] | confirm on sandbox |
-| 5 | V2 wallet API | not in collection | `POST /api/v2/payment/process`, `POST /api/v2/payment/process/google`, `GET /api/v2/payments/{paymentId}`, `…/{paymentId}/await`, `…/lookup/by-order-id`; webhook signed `X-PSP-Signature` (HMAC-SHA256 over `"${timestamp}.${rawBody}"`, `v1=` prefix, `X-PSP-Timestamp` ≤ 5 min), events `AUTHORIZED`/`FAILED` with `webhookId` [W: v2/api-reference, v2/webhook-guide] | not covered | see §11; a separate `wallet` package if Apple Pay / Google Pay is wanted |
+| 5 | V2 wallet API | not in collection | `POST /api/v2/payment/process`, `POST /api/v2/payment/process/google`, `GET /api/v2/payments/{paymentId}`, `…/{paymentId}/await`, `…/lookup/by-order-id`; webhook signed `X-PSP-Signature` (HMAC-SHA256 over `"${timestamp}.${rawBody}"`, `v1=` prefix, `X-PSP-Timestamp` ≤ 5 min), events `AUTHORIZED`/`FAILED` with `webhookId` [W: v2/api-reference, v2/webhook-guide] | `wallet` package | see §11 |
 | 6 | "Request a card token" | item has no URL [C: Subscription plans › Request a card token] | not documented | not implemented | ask Bonum for the path |
 
 ## 8. Test evidence
@@ -287,7 +287,7 @@ Rules: amount is derived from the order server-side; the card token is looked up
 
 ## 11. V2 Apple Pay / Google Pay API — how to use it
 
-Bonum runs a second, independent API for wallet payments. It is not in the Postman collection and `bonum-go` does not wrap it; this section is what a `wallet` package would implement.
+Bonum runs a second, independent API for wallet payments. It is not in the Postman collection. Since 2026-09-14 it is wrapped by the `wallet` package (`wallet/`), which implements everything in this section.
 
 ### 11.1 How it differs from the gateway API
 
@@ -333,7 +333,7 @@ sequenceDiagram
 ### 11.4 Google Pay — setup and code [W: google-pay/index.html]
 
 1. Create a business profile in the Google Pay Business Console → obtain your Google Merchant ID → give it to Bonum → receive your merchant key. Bonum's gateway id is the constant `bonumpsp`.
-2. **PaymentDataRequest** (`apiVersion 2`): `allowedPaymentMethods: [{type: 'CARD', parameters: {allowedAuthMethods: ['CRYPTOGRAM_3DS'], allowedCardNetworks: ['MASTERCARD','VISA']}, tokenizationSpecification: {type: 'PAYMENT_GATEWAY', parameters: {gateway: 'bonumpsp', gatewayMerchantId: '<your Google Merchant ID>'}}}]`; `merchantInfo: {merchantName, merchantId: 'BCR2DN7TVGEYH4JB'}` on web (omit `merchantId` on Android); `transactionInfo: {totalPriceStatus: 'FINAL', totalPrice, currencyCode: 'MNT'}`; `PaymentsClient({environment: 'TEST' | 'PRODUCTION'})`.
+2. **PaymentDataRequest** (`apiVersion 2`): `allowedPaymentMethods: [{type: 'CARD', parameters: {allowedAuthMethods: ['CRYPTOGRAM_3DS'], allowedCardNetworks: ['MASTERCARD','VISA']}, tokenizationSpecification: {type: 'PAYMENT_GATEWAY', parameters: {gateway: 'bonumpsp', gatewayMerchantId: 'BCR2DN7TVGEYH4JB'}}}]` (Bonum's static gateway id, per the live V2 integration guide fetched 2026-09-14); `merchantInfo: {merchantName, merchantId: '<your Google Merchant ID>'}` on web (omit `merchantId` on Android); `transactionInfo: {totalPriceStatus: 'FINAL', totalPrice, currencyCode: 'MNT'}`; `PaymentsClient({environment: 'TEST' | 'PRODUCTION'})`.
 3. Send `paymentData.paymentMethodData.tokenizationData.token` with the order id, amount and currency to your backend.
 4. **Backend → Bonum:** `POST /api/v2/payment/process/google` with `order_id`, `token` (required), `currency_code` ∈ `MNT | USD | EUR | JPY` (required), `amount` (optional), `branch_id` (optional) [W: v2/api-reference].
 5. **Review:** Business Console › Google Pay API › Add an integration (website or Android app) › integration type "Gateway" › upload 5 screenshots (item selection, pre-purchase, payment method selection, Google Pay sheet, post-purchase) › submit; approval takes 2–3 business days.
@@ -357,9 +357,9 @@ sequenceDiagram
 - `AUTHORIZED` is described as funds reserved, but no capture, void or refund endpoint appears in any V2 page — confirm whether authorization auto-captures and how reversals work before go-live.
 - Sandbox credentials (`x-merchant-key` for `testpsp.bonum.mn`) are not published anywhere; request them at onboarding.
 
-### 11.7 Proposed SDK shape
+### 11.7 SDK implementation
 
-A `wallet` package alongside the gateway client: `ProcessApplePay`, `ProcessGooglePay`, `GetPayment`, `AwaitPayment(timeout)`, `LookupByOrderID`, and `VerifyWebhook(body, signature, timestamp, secret)` implementing the `v1=` HMAC with the 300 s window. Roughly a day of work once a merchant key is available; unit-testable with an `httptest` fake like `client_test.go`.
+Implemented in `wallet/` (2026-09-14): `ProcessApplePay`, `ProcessGooglePay`, `GetPayment`, `AwaitPayment(paymentID, timeout)` / `AwaitURL(awaitURL, timeout)` (capped at 28 s), `LookupByOrderID`, `Sign`, `VerifyWebhook(body, signature, timestamp, secret)` implementing the `v1=` HMAC with the 300 s window, and `ParseWebhook`. Unit-tested against an `httptest` fake (`tests/wallet/`) using the request/response examples from the live V2 pages. Not yet exercised against `testpsp.bonum.mn` because no sandbox merchant key is available (§11.6).
 
 ## Sources
 

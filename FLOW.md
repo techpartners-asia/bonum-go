@@ -16,9 +16,11 @@ Two rules underpin everything below:
 
 1. **The webhook is the source of truth.** The browser `callback` redirect only tells you the
    customer came back; it does not prove they paid.
-2. **Verify every webhook** with `bonum.VerifyWebhook(rawBody, header, MERCHANT_CHECKSUM_KEY)`
-   before acting on it. Then look up the order by `transactionId` (your id) and update it
-   idempotently — Bonum may retry deliveries.
+2. **Verify every webhook** with `bonum.ParseWebhook(rawBody, header, MERCHANT_CHECKSUM_KEY)`,
+   which verifies the checksum and returns a typed Event. Then look up the order by
+   `transactionId` (your id) and update it idempotently — Bonum may retry deliveries.
+
+Apple Pay / Google Pay use Bonum's separate V2 API; see the `wallet` package in the README.
 
 ---
 
@@ -43,7 +45,7 @@ before expiry; you never pass tokens around. Create one `bonum.Client` per proce
 ## 1. Checkout payment (web or mobile)
 
 Use this for one-off purchases. The customer pays on Bonum's page with QPay, card, WeChat,
-SonoShop… whatever the terminal has enabled (`GetPaymentProviders`).
+SonoShop… whatever the terminal has enabled (`Invoices.Providers`).
 
 ```mermaid
 sequenceDiagram
@@ -51,14 +53,14 @@ sequenceDiagram
     participant B as Backend
     participant G as Bonum
     C->>B: POST /orders/123/pay
-    B->>G: CreateInvoice{amount, transactionId:"order-123", callback, expiresIn, providers?}
+    B->>G: Invoices.Create{amount, transactionId:"order-123", callback, expiresIn, providers?}
     G-->>B: {invoiceId, followUpLink}
     B-->>C: followUpLink
     C->>G: open followUpLink (redirect / in-app browser)
     Note over C,G: customer picks a method and pays
     G-->>C: redirect to callback URL (UX only)
     G->>B: POST webhook {type:PAYMENT, status:SUCCESS|FAILED, body{transactionId,…}}
-    B->>B: VerifyWebhook → mark order-123 paid / failed
+    B->>B: ParseWebhook → PaymentEvent → mark order-123 paid / failed
     C->>B: GET /orders/123 (poll or push) → show result
 ```
 
@@ -75,7 +77,7 @@ Webhook payloads:
   initType, status:"PAID", respCode, transactionId, extras`
 - `FAILED` body: `transactionId, amount, currency, updatedAt, terminalId, invoiceStatus:"EXPIRED"…`
 
-Do **not** poll `GetInvoiceStatusSandbox` in production — Bonum blocks it. Keep an invoice table
+Do **not** poll `Sandbox.InvoiceStatus` in production — Bonum blocks it. Keep an invoice table
 on your side and let the webhook update it.
 
 ---
@@ -91,13 +93,13 @@ sequenceDiagram
     participant B as Backend
     participant G as Bonum
     C->>B: POST /me/cards
-    B->>G: CreateCardToken{callback, transactionId:"cardreq-77", payment?{amount}, subscription?}
+    B->>G: Cards.Tokenize{callback, transactionId:"cardreq-77", payment?{amount}, subscription?}
     G-->>B: {id, followUpLink}
     B-->>C: followUpLink
     C->>G: open followUpLink → customer enters card, 3-D Secure
     G-->>C: redirect to callback
     G->>B: POST webhook {type:CARD-TOKEN, body{token, mask, expiry, bank, transactionId, amounts, subscriptions}}
-    B->>B: VerifyWebhook → store token against the customer (show mask "5150 23** **** 4778")
+    B->>B: ParseWebhook → CardTokenEvent → store token against the customer (show mask "5150 23** **** 4778")
 ```
 
 - `payment.amount` charges the card during tokenization (default 0.01 MNT verification charge).
@@ -108,7 +110,7 @@ sequenceDiagram
 
 ## 3. Charge a saved card
 
-### One-off (`Purchase`)
+### One-off (`Cards.Purchase`)
 
 ```mermaid
 sequenceDiagram
@@ -116,44 +118,44 @@ sequenceDiagram
     participant B as Backend
     participant G as Bonum
     C->>B: POST /orders/124/pay-with-card {cardId}
-    B->>G: Purchase(cardToken, {amount, currency:"MNT", transactionId:"order-124"})
+    B->>G: Cards.Purchase(cardToken, {amount, currency:"MNT", transactionId:"order-124"})
     alt processed now
-        G-->>B: 200 {data.status:SUCCESS}  or  400 *Error (declined)
+        G-->>B: Purchase{Status:SUCCESS}  or  *DeclinedError (errors.Is ErrDeclined)
         B-->>C: result
     else high traffic
-        G-->>B: 201 {data.status:QUEUED}
+        G-->>B: Purchase{Status:QUEUED}
         B-->>C: "pending"
         G->>B: POST webhook {type:TOKEN-PAYMENT, status, body{transactionId, completedAt}}
-        B->>B: VerifyWebhook → finalise order-124
+        B->>B: ParseWebhook → TokenPaymentEvent → finalise order-124
     end
 ```
 
-`RollbackPurchase(cardToken, transactionId)` reverses a purchase. The card token goes in the
+`Cards.Reverse(ctx, cardToken, transactionId)` reverses a purchase. The card token goes in the
 `X-CARD-TOKEN` header; the SDK does that for you.
 
-### Recurring (`Subscribe`)
+### Recurring (`Subscriptions.Subscribe`)
 
 ```mermaid
 sequenceDiagram
     participant B as Backend
     participant G as Bonum
-    B->>G: ListPaymentPlans()
+    B->>G: Subscriptions.Plans()
     G-->>B: [{planId, recurringType:WEEKLY|MONTHLY|YEARLY, amount, …}]
-    B->>G: Subscribe(cardToken, {planId, cycleValue, cycles?, payNow, custEmail?})
+    B->>G: Subscriptions.Subscribe(cardToken, {planId, cycleValue, cycles?, payNow, custEmail?})
     G-->>B: {subscriptionId, nextBillAt, status:ACTIVE}
     loop every billing date
         G->>G: charge the card automatically
         G->>B: POST webhook {type:SUBSCRIPTION-PAYMENT, status, body{subscriptionId, planId, transactionId, amount, completedAt}}
-        B->>B: VerifyWebhook → extend the customer's service period
+        B->>B: ParseWebhook → SubscriptionPaymentEvent → extend the customer's service period
     end
 ```
 
 - `cycleValue`: 1–7 (Mon–Sun) weekly, 1–31 monthly, 1–366 yearly. Ignored when `payNow`.
 - If the subscription day equals today's `cycleValue`, the first charge runs immediately.
-- Change card: `ChangeSubscriptionTokenExisting(id, otherToken)` or
-  `ChangeSubscriptionTokenNew(id, …)` (returns a `followUpLink`, same as §2).
-- Stop: `Unsubscribe` (already scheduled charge still runs) vs `DeleteSubscription` (stops now).
-- Sandbox: `ExecuteSubscriptionPaymentSandbox(id)` fires a billing run so you can test the webhook.
+- Change card: `Subscriptions.ChangeCard(ctx, id, otherToken)` or
+  `Subscriptions.ChangeCardByTokenizing(ctx, id, …)` (returns a `FollowUpLink`, same as §2).
+- Stop: `Subscriptions.Unsubscribe` (already scheduled charge still runs) vs `Subscriptions.Delete` (stops now).
+- Sandbox: `Sandbox.RunSubscriptionBilling(ctx, id)` fires a billing run so you can test the webhook.
 
 Plans are created on the merchant portal, not through the API.
 
@@ -171,7 +173,7 @@ sequenceDiagram
     participant G as Bonum
     participant A as Bank app
     C->>B: POST /orders/125/qr
-    B->>G: CreateQrCode{amount, transactionId:"order-125", expiresIn}
+    B->>G: QR.Create{amount, transactionId:"order-125", expiresIn}
     G-->>B: {invoiceId, qrCode, qrImage(base64 png), links[{name, logo, link, appStoreId, androidPackageName}]}
     B-->>C: qrImage + links
     alt same device (mobile)
@@ -181,14 +183,14 @@ sequenceDiagram
     end
     A->>G: pays
     G->>B: POST webhook {type:PAYMENT, …}
-    B->>B: VerifyWebhook → mark order-125 paid
+    B->>B: ParseWebhook → PaymentEvent → mark order-125 paid
     C->>B: poll / push → show success
 ```
 
 - On mobile, render `links[]` as buttons; `androidPackageName` / `appStoreId` let you hide apps
   that are not installed or fall back to the store.
-- `InvoiceByQrCode(qrCode)` resolves a scanned QPay string back to its invoice.
-- `PayByCardToken(cardToken, {qrCode, transactionId})` settles a QR invoice with a saved card —
+- `QR.Lookup(ctx, qrCode)` resolves a scanned QPay string back to its invoice.
+- `QR.PayWithCard(ctx, cardToken, {qrCode, transactionId})` settles a QR invoice with a saved card —
   useful when *your* app is the one scanning a merchant's QR.
 
 ---
@@ -197,17 +199,17 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    R[POST from Bonum] --> V{VerifyWebhook<br/>x-checksum-v2}
-    V -- no --> U[401, stop]
-    V -- yes --> P[PeekWebhook.type]
-    P --> PAY[PAYMENT] & TOK[CARD-TOKEN] & TP[TOKEN-PAYMENT] & SUB[SUBSCRIPTION-PAYMENT]
+    R[POST from Bonum] --> V{ParseWebhook<br/>x-checksum-v2}
+    V -- ErrBadChecksum --> U[401, stop]
+    V -- Event --> P[type switch]
+    P --> PAY[PaymentEvent] & TOK[CardTokenEvent] & TP[TokenPaymentEvent] & SUB[SubscriptionPaymentEvent]
     PAY & TOK & TP & SUB --> F[find by transactionId,<br/>apply idempotently] --> OK[200]
 ```
 
 - Register the URL with Bonum (merchant portal / support) — it is not set per request.
 - Reply `200` quickly; do heavy work asynchronously.
 - Ignore `message` — Bonum says its text may change at any time.
-- Store `traceId`s from API errors; Bonum support asks for them.
+- Store `TraceID`s from `*bonum.APIError`; Bonum support asks for them.
 
 ---
 
@@ -216,15 +218,16 @@ flowchart LR
 | Step | Bonum endpoint | SDK |
 |---|---|---|
 | token | `GET /bonum-gateway/ecommerce/auth/create`, `/auth/refresh` | automatic |
-| providers | `GET …/invoices/payment-providers` | `GetPaymentProviders` |
-| checkout | `POST …/invoices` | `CreateInvoice` |
-| save card | `POST /mpay-service/merchant/cards/tokenize/request` | `CreateCardToken` |
-| charge token | `POST …/transaction/purchase` | `Purchase` |
-| reverse | `DELETE …/transaction/reverse/{transactionId}` | `RollbackPurchase` |
-| plans | `GET …/values/payment-plans` | `ListPaymentPlans` |
-| subscribe | `POST …/subscriptions/subscribe` | `Subscribe` |
-| list subs | `GET …/subscriptions` | `GetSubscriptions` |
-| change card | `PUT …/subscriptions/{id}/change[/create-new-token]` | `ChangeSubscriptionToken*` |
-| cancel | `DELETE …/subscriptions/{id}[/delete]` | `Unsubscribe`, `DeleteSubscription` |
-| QR | `POST …/transaction/qr/create`, `/qr`, `PUT …/qr/pay` | `CreateQrCode`, `InvoiceByQrCode`, `PayByCardToken` |
-| webhook | merchant URL, header `x-checksum-v2` | `VerifyWebhook`, `Parse*Webhook` |
+| providers | `GET …/invoices/payment-providers` | `Invoices.Providers` |
+| checkout | `POST …/invoices` | `Invoices.Create` |
+| save card | `POST /mpay-service/merchant/cards/tokenize/request` | `Cards.Tokenize` |
+| charge token | `POST …/transaction/purchase` | `Cards.Purchase` |
+| reverse | `DELETE …/transaction/reverse/{transactionId}` | `Cards.Reverse` |
+| plans | `GET …/values/payment-plans` | `Subscriptions.Plans` |
+| subscribe | `POST …/subscriptions/subscribe` | `Subscriptions.Subscribe` |
+| list subs | `GET …/subscriptions` | `Subscriptions.List` |
+| change card | `PUT …/subscriptions/{id}/change[/create-new-token]` | `Subscriptions.ChangeCard`, `Subscriptions.ChangeCardByTokenizing` |
+| cancel | `DELETE …/subscriptions/{id}[/delete]` | `Subscriptions.Unsubscribe`, `Subscriptions.Delete` |
+| QR | `POST …/transaction/qr/create`, `/qr`, `PUT …/qr/pay` | `QR.Create`, `QR.Lookup`, `QR.PayWithCard` |
+| sandbox | `GET …/invoices/{id}`, `GET …/invoices/paid`, `PUT …/subscriptions/{id}/execute` | `Sandbox.InvoiceStatus`, `Sandbox.MarkInvoicePaid`, `Sandbox.RunSubscriptionBilling` |
+| webhook | merchant URL, header `x-checksum-v2` | `ParseWebhook` → `Event` |

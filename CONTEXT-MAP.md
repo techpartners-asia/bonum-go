@@ -1,0 +1,22 @@
+# Context Map
+
+Bonum exposes two independent payment APIs. This SDK mirrors them as two bounded contexts
+that share nothing but an internal HTTP adapter.
+
+## Contexts
+
+- [Gateway](./CONTEXT.md) (package `bonum`): hosted checkout invoices, card tokens and
+  purchases, subscriptions, QR invoices, and the gateway webhook.
+- [Wallet](./wallet/CONTEXT.md) (package `wallet`): Apple Pay and Google Pay payments
+  submitted with an encrypted wallet token, and the wallet webhook.
+
+## Relationships
+
+- **Gateway ↔ Wallet**: no shared types. The same merchant may use both, but a Wallet
+  Payment is never an Invoice and a Purchase is never a Wallet Payment. Each context has its
+  own credential, host, error body and webhook signature.
+- **Both → internal/rest**: a shared HTTP execution adapter. It knows nothing about either
+  domain; each context hands it an error decoder.
+- **Merchant backend → both**: the merchant's server is the only caller. Browsers and
+  mobile apps never hold either credential; they redirect to a Follow-up Link (Gateway) or
+  forward a Wallet Token (Wallet).

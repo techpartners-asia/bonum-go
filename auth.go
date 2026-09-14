@@ -1,80 +1,103 @@
 package bonum
 
 import (
+	"context"
 	"net/http"
+	"sync"
 	"time"
 
-	"github.com/techpartners-asia/bonum-go/types"
+	"github.com/techpartners-asia/bonum-go/internal/rest"
+	"resty.dev/v3"
 )
 
-// Authenticate forces a fresh token pair via auth/create and caches it.
-// You normally never need this: every call obtains a token on demand. The endpoint is
-// rate limited, so avoid calling it in a loop.
-func (c *Client) Authenticate() (*types.AuthResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.createTokenLocked()
+// TokenPair is returned by auth/create and auth/refresh.
+type TokenPair struct {
+	TokenType        string `json:"tokenType"` // "Bearer"
+	AccessToken      string `json:"accessToken"`
+	ExpiresIn        int64  `json:"expiresIn"` // access token ttl, in Unit
+	RefreshToken     string `json:"refreshToken"`
+	RefreshExpiresIn int64  `json:"refreshExpiresIn"` // refresh token ttl, in Unit
+	Unit             string `json:"unit"`             // "SECONDS"
 }
 
-// Refresh exchanges the cached refresh token for a new access token via auth/refresh.
-func (c *Client) Refresh() (*types.AuthResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.refreshTokenLocked()
+// Refresh a little early so an in-flight request never races the server-side expiry.
+const tokenExpirySkew = 30 * time.Second
+
+// tokenSource owns the AppSecret -> bearer token lifecycle. Its interface is Token():
+// callers get a valid access token and never see create/refresh/expiry.
+type tokenSource struct {
+	rest       *rest.Client
+	appSecret  string
+	terminalID string
+	now        func() time.Time
+
+	mu               sync.Mutex
+	accessToken      string
+	refreshToken     string
+	accessExpiresAt  time.Time
+	refreshExpiresAt time.Time
 }
 
-// token returns a usable access token, refreshing or re-authenticating as needed.
-func (c *Client) token() (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func newTokenSource(r *rest.Client, appSecret, terminalID string) *tokenSource {
+	return &tokenSource{rest: r, appSecret: appSecret, terminalID: terminalID, now: time.Now}
+}
 
-	now := time.Now()
-	if c.accessToken != "" && now.Before(c.accessExpiresAt.Add(-tokenExpirySkew)) {
-		return c.accessToken, nil
+// Token returns a usable access token, refreshing or re-authenticating as needed.
+func (t *tokenSource) Token(ctx context.Context) (string, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	now := t.now()
+	if t.accessToken != "" && now.Before(t.accessExpiresAt.Add(-tokenExpirySkew)) {
+		return t.accessToken, nil
 	}
-	if c.refreshToken != "" && now.Before(c.refreshExpiresAt.Add(-tokenExpirySkew)) {
-		if _, err := c.refreshTokenLocked(); err == nil {
-			return c.accessToken, nil
+	if t.refreshToken != "" && now.Before(t.refreshExpiresAt.Add(-tokenExpirySkew)) {
+		if _, err := t.refreshLocked(ctx); err == nil {
+			return t.accessToken, nil
 		}
 	}
-	if _, err := c.createTokenLocked(); err != nil {
+	if _, err := t.createLocked(ctx); err != nil {
 		return "", err
 	}
-	return c.accessToken, nil
+	return t.accessToken, nil
 }
 
-func (c *Client) createTokenLocked() (*types.AuthResponse, error) {
-	var out types.AuthResponse
-	req := c.http.R().
-		SetHeader("Accept", "application/json").
-		SetHeader("Authorization", "AppSecret "+c.appSecret).
-		SetHeader("X-TERMINAL-ID", c.terminalID)
-	if err := c.do(req, http.MethodGet, ecommercePath+"/auth/create", &out); err != nil {
+func (t *tokenSource) Create(ctx context.Context) (*TokenPair, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.createLocked(ctx)
+}
+
+func (t *tokenSource) Refresh(ctx context.Context) (*TokenPair, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.refreshLocked(ctx)
+}
+
+func (t *tokenSource) createLocked(ctx context.Context) (*TokenPair, error) {
+	req := t.rest.R().SetContext(ctx).
+		SetHeader("Authorization", "AppSecret "+t.appSecret).
+		SetHeader("X-TERMINAL-ID", t.terminalID)
+	return t.exchange(req, ecommercePath+"/auth/create")
+}
+
+func (t *tokenSource) refreshLocked(ctx context.Context) (*TokenPair, error) {
+	req := t.rest.R().SetContext(ctx).SetAuthToken(t.refreshToken)
+	return t.exchange(req, ecommercePath+"/auth/refresh")
+}
+
+func (t *tokenSource) exchange(req *resty.Request, path string) (*TokenPair, error) {
+	var out TokenPair
+	if err := t.rest.Do(req, http.MethodGet, path, &out); err != nil {
 		return nil, err
 	}
-	c.storeTokensLocked(&out)
-	return &out, nil
-}
-
-func (c *Client) refreshTokenLocked() (*types.AuthResponse, error) {
-	var out types.AuthResponse
-	req := c.http.R().
-		SetHeader("Accept", "application/json").
-		SetAuthToken(c.refreshToken)
-	if err := c.do(req, http.MethodGet, ecommercePath+"/auth/refresh", &out); err != nil {
-		return nil, err
-	}
-	c.storeTokensLocked(&out)
-	return &out, nil
-}
-
-func (c *Client) storeTokensLocked(a *types.AuthResponse) {
-	now := time.Now()
-	c.accessToken = a.AccessToken
-	c.accessExpiresAt = now.Add(time.Duration(a.ExpiresIn) * time.Second)
+	now := t.now()
+	t.accessToken = out.AccessToken
+	t.accessExpiresAt = now.Add(time.Duration(out.ExpiresIn) * time.Second)
 	// auth/refresh may omit the refresh token; keep the one we already have in that case.
-	if a.RefreshToken != "" {
-		c.refreshToken = a.RefreshToken
-		c.refreshExpiresAt = now.Add(time.Duration(a.RefreshExpiresIn) * time.Second)
+	if out.RefreshToken != "" {
+		t.refreshToken = out.RefreshToken
+		t.refreshExpiresAt = now.Add(time.Duration(out.RefreshExpiresIn) * time.Second)
 	}
+	return &out, nil
 }

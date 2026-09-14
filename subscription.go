@@ -1,114 +1,131 @@
 package bonum
 
 import (
+	"context"
 	"net/http"
 	"strconv"
-
-	"github.com/techpartners-asia/bonum-go/types"
 )
 
-// ListPaymentPlans returns the merchant's subscription plans (managed on the merchant portal).
-func (c *Client) ListPaymentPlans() (*types.ListPaymentPlansResponse, error) {
-	req, err := c.authedRequest()
+type RecurringType string
+
+const (
+	RecurringWeekly  RecurringType = "WEEKLY"
+	RecurringMonthly RecurringType = "MONTHLY"
+	RecurringYearly  RecurringType = "YEARLY"
+)
+
+type (
+	// PaymentPlan is a recurring billing template managed on the merchant portal.
+	PaymentPlan struct {
+		PlanID        int64         `json:"planId"`
+		Name          string        `json:"name"`
+		Remark        string        `json:"remark"`
+		CreatedAt     string        `json:"createdAt"`
+		RecurringType RecurringType `json:"recurringType"`
+		Amount        float64       `json:"amount"`
+		Status        string        `json:"status"`
+		CardCount     int64         `json:"cardCount"`
+		RetryCount    int64         `json:"retryCount"`
+	}
+
+	SubscribeInput struct {
+		PlanID     int64  `json:"planId"`
+		CycleValue int64  `json:"cycleValue"` // 1-7 weekly, 1-31 monthly, 1-366 yearly; ignored when PayNow
+		Cycles     *int64 `json:"cycles,omitempty"`
+		PayNow     bool   `json:"payNow"`
+		CustEmail  string `json:"custEmail,omitempty"`
+	}
+
+	// Subscription is a Card Token enrolled in a Payment Plan.
+	Subscription struct {
+		SubscriptionID int64       `json:"subscriptionId"`
+		SubscribedAt   string      `json:"subscribedAt"`
+		CardMask       string      `json:"cardMask"`
+		Plan           PaymentPlan `json:"plan"`
+		NextBillAt     string      `json:"nextBillAt"`
+		LastBilledAt   string      `json:"lastBilledAt"`
+		Status         string      `json:"status"`
+	}
+
+	ChangeCardInput struct {
+		Callback      string `json:"callback"`
+		TransactionID string `json:"transactionId"`
+		Items         []Item `json:"items,omitempty"`
+	}
+)
+
+func (in SubscribeInput) validate() error {
+	switch {
+	case in.PlanID <= 0:
+		return invalid("PlanID", "required")
+	case !in.PayNow && (in.CycleValue < 1 || in.CycleValue > 366):
+		return invalid("CycleValue", "must be 1-7 weekly, 1-31 monthly or 1-366 yearly")
+	}
+	return nil
+}
+
+func (in ChangeCardInput) validate() error {
+	switch {
+	case in.Callback == "":
+		return invalid("Callback", "required")
+	case in.TransactionID == "":
+		return invalid("TransactionID", "required")
+	}
+	return nil
+}
+
+func subscriptionID(id int64) reqOpt { return pathParam("id", strconv.FormatInt(id, 10)) }
+
+// SubscriptionService is the Subscription aggregate: recurring charges on a Card Token.
+type SubscriptionService struct{ c *Client }
+
+// Plans returns the Terminal's Payment Plans.
+func (s *SubscriptionService) Plans(ctx context.Context) ([]PaymentPlan, error) {
+	out, err := callEnveloped[[]PaymentPlan](ctx, s.c, http.MethodGet, mpayPath+"/values/payment-plans")
 	if err != nil {
 		return nil, err
 	}
-	var out types.ListPaymentPlansResponse
-	if err := c.do(req, http.MethodGet, mpayPath+"/values/payment-plans", &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
+	return *out, nil
 }
 
-// Subscribe enrols a card token in a payment plan. If today matches the plan's cycleValue
-// (or PayNow is set) the first charge happens immediately.
-func (c *Client) Subscribe(cardToken string, input types.SubscribeInput) (*types.SubscribeResponse, error) {
-	req, err := c.authedRequest()
+// Subscribe enrols a Card Token in a Payment Plan. If today matches CycleValue (or PayNow
+// is set) the first charge happens immediately.
+func (s *SubscriptionService) Subscribe(ctx context.Context, cardTok string, in SubscribeInput) (*Subscription, error) {
+	if err := in.validate(); err != nil {
+		return nil, err
+	}
+	return callEnveloped[Subscription](ctx, s.c, http.MethodPost, mpayPath+"/subscriptions/subscribe", cardToken(cardTok), body(in))
+}
+
+// List returns the Subscriptions attached to a Card Token.
+func (s *SubscriptionService) List(ctx context.Context, cardTok string) ([]Subscription, error) {
+	out, err := callEnveloped[[]Subscription](ctx, s.c, http.MethodGet, mpayPath+"/subscriptions", cardToken(cardTok))
 	if err != nil {
 		return nil, err
 	}
-	var out types.SubscribeResponse
-	if err := c.do(req.SetHeader(cardTokenHeader, cardToken).SetBody(input), http.MethodPost, mpayPath+"/subscriptions/subscribe", &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
+	return *out, nil
 }
 
-// GetSubscriptions lists the subscriptions attached to a card token.
-func (c *Client) GetSubscriptions(cardToken string) (*types.GetSubscriptionsResponse, error) {
-	req, err := c.authedRequest()
-	if err != nil {
+// ChangeCardByTokenizing moves a Subscription onto a brand-new card by starting a
+// Tokenization. Redirect the customer to FollowUpLink.
+func (s *SubscriptionService) ChangeCardByTokenizing(ctx context.Context, id int64, in ChangeCardInput) (*Tokenization, error) {
+	if err := in.validate(); err != nil {
 		return nil, err
 	}
-	var out types.GetSubscriptionsResponse
-	if err := c.do(req.SetHeader(cardTokenHeader, cardToken), http.MethodGet, mpayPath+"/subscriptions", &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
+	return call[Tokenization](ctx, s.c, http.MethodPut, mpayPath+"/subscriptions/{id}/change/create-new-token", subscriptionID(id), body(in))
 }
 
-// ChangeSubscriptionTokenNew moves a subscription onto a brand-new card by starting a
-// tokenization flow. Redirect the customer to FollowUpLink.
-func (c *Client) ChangeSubscriptionTokenNew(subscriptionID int64, input types.ChangeSubscriptionTokenInput) (*types.CreateCardTokenResponse, error) {
-	req, err := c.authedRequest()
-	if err != nil {
-		return nil, err
-	}
-	var out types.CreateCardTokenResponse
-	if err := c.do(req.SetPathParam("id", strconv.FormatInt(subscriptionID, 10)).SetBody(input),
-		http.MethodPut, mpayPath+"/subscriptions/{id}/change/create-new-token", &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
+// ChangeCard moves a Subscription onto an already stored Card Token.
+func (s *SubscriptionService) ChangeCard(ctx context.Context, id int64, cardTok string) (*Subscription, error) {
+	return callEnveloped[Subscription](ctx, s.c, http.MethodPut, mpayPath+"/subscriptions/{id}/change", subscriptionID(id), cardToken(cardTok))
 }
 
-// ChangeSubscriptionTokenExisting moves a subscription onto an already stored card token.
-func (c *Client) ChangeSubscriptionTokenExisting(subscriptionID int64, cardToken string) (*types.SubscribeResponse, error) {
-	req, err := c.authedRequest()
-	if err != nil {
-		return nil, err
-	}
-	var out types.SubscribeResponse
-	if err := c.do(req.SetHeader(cardTokenHeader, cardToken).SetPathParam("id", strconv.FormatInt(subscriptionID, 10)),
-		http.MethodPut, mpayPath+"/subscriptions/{id}/change", &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
+// Unsubscribe cancels a Subscription; the already scheduled next billing still runs.
+func (s *SubscriptionService) Unsubscribe(ctx context.Context, id, planID int64) error {
+	return callAction(ctx, s.c, http.MethodDelete, mpayPath+"/subscriptions/{id}", subscriptionID(id), body(map[string]int64{"planId": planID}))
 }
 
-// Unsubscribe cancels a subscription; the already scheduled next billing still runs.
-func (c *Client) Unsubscribe(subscriptionID, planID int64) (*types.SubscriptionActionResponse, error) {
-	return c.subscriptionDelete(subscriptionID, planID, mpayPath+"/subscriptions/{id}")
-}
-
-// DeleteSubscription cancels a subscription immediately; no further billing is created.
-func (c *Client) DeleteSubscription(subscriptionID, planID int64) (*types.SubscriptionActionResponse, error) {
-	return c.subscriptionDelete(subscriptionID, planID, mpayPath+"/subscriptions/{id}/delete")
-}
-
-func (c *Client) subscriptionDelete(subscriptionID, planID int64, path string) (*types.SubscriptionActionResponse, error) {
-	req, err := c.authedRequest()
-	if err != nil {
-		return nil, err
-	}
-	var out types.SubscriptionActionResponse
-	if err := c.do(req.SetPathParam("id", strconv.FormatInt(subscriptionID, 10)).SetBody(map[string]int64{"planId": planID}),
-		http.MethodDelete, path, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// ExecuteSubscriptionPaymentSandbox triggers a billing run on demand. Sandbox only.
-func (c *Client) ExecuteSubscriptionPaymentSandbox(subscriptionID int64) (*types.SubscriptionActionResponse, error) {
-	req, err := c.authedRequest()
-	if err != nil {
-		return nil, err
-	}
-	var out types.SubscriptionActionResponse
-	if err := c.do(req.SetPathParam("id", strconv.FormatInt(subscriptionID, 10)),
-		http.MethodPut, mpayPath+"/subscriptions/{id}/execute", &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
+// Delete cancels a Subscription immediately; no further billing is created.
+func (s *SubscriptionService) Delete(ctx context.Context, id, planID int64) error {
+	return callAction(ctx, s.c, http.MethodDelete, mpayPath+"/subscriptions/{id}/delete", subscriptionID(id), body(map[string]int64{"planId": planID}))
 }
