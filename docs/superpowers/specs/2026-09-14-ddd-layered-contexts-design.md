@@ -120,10 +120,11 @@ outside the module (no resty, no `internal/rest`). The test lists offending file
 ### Ports (interfaces the application layer depends on)
 
 ```go
-// gateway/ports
+// gateway/ports — method names are unique across all six interfaces because one adapter
+// struct implements every port.
 type AccessAPI interface {
-    Create(ctx) (*access.TokenPair, error)
-    Refresh(ctx) (*access.TokenPair, error)
+    CreateToken(ctx) (*access.TokenPair, error)
+    RefreshToken(ctx) (*access.TokenPair, error)
 }
 type CheckoutAPI interface {
     Providers(ctx) ([]checkout.PaymentProviderStatus, error)
@@ -137,16 +138,16 @@ type CardAPI interface {
 type SubscriptionAPI interface {
     Plans(ctx) ([]subscription.PaymentPlan, error)
     Subscribe(ctx, cardToken string, subscription.SubscribeInput) (*subscription.Subscription, error)
-    List(ctx, cardToken string) ([]subscription.Subscription, error)
+    ListSubscriptions(ctx, cardToken string) ([]subscription.Subscription, error)
     ChangeCardByTokenizing(ctx, id int64, subscription.ChangeCardInput) (*card.Tokenization, error)
     ChangeCard(ctx, id int64, cardToken string) (*subscription.Subscription, error)
     Unsubscribe(ctx, id, planID int64) error
-    Delete(ctx, id, planID int64) error
+    DeleteSubscription(ctx, id, planID int64) error
 }
 type QRAPI interface {
-    Create(ctx, qr.CreateQRInput) (*qr.QRInvoice, error)
-    Lookup(ctx, qrCode string) (*qr.QRInvoice, error)
-    PayWithCard(ctx, cardToken string, qr.PayQRInput) (*card.Purchase, error)
+    CreateQR(ctx, qr.CreateQRInput) (*qr.QRInvoice, error)
+    LookupQR(ctx, qrCode string) (*qr.QRInvoice, error)
+    PayQRWithCard(ctx, cardToken string, qr.PayQRInput) (*card.Purchase, error)
 }
 type SandboxAPI interface {
     InvoiceStatus(ctx, invoiceID string) (json.RawMessage, error)
@@ -158,9 +159,9 @@ type SandboxAPI interface {
 type PaymentAPI interface {
     ProcessApplePay(ctx, payment.ProcessApplePayInput) (*payment.ProcessResponse, error)
     ProcessGooglePay(ctx, payment.ProcessGooglePayInput) (*payment.ProcessResponse, error)
-    Get(ctx, paymentID string) (*payment.Payment, error)
+    GetPayment(ctx, paymentID string) (*payment.Payment, error)
     LookupByOrderID(ctx, orderID string) (*payment.Payment, error)
-    Await(ctx, paymentID string, timeout time.Duration) (*payment.AwaitResult, error)
+    AwaitPayment(ctx, paymentID string, timeout time.Duration) (*payment.AwaitResult, error)
     AwaitURL(ctx, awaitURL string, timeout time.Duration) (*payment.AwaitResult, error)
 }
 ```
@@ -183,14 +184,14 @@ calls a port directly.
 
 `gateway/adapters/httpapi.Client` is one struct implementing all six gateway ports, with a
 compile-time assertion per port. Constructor
-`New(baseURL string, timeout time.Duration, appSecret, terminalID, lang string) *Client`
-plus `SetBaseURL`, `SetTimeout`, `SetTransport`, `Close`. Files split by aggregate mirror the
+`New(baseURL, appSecret, terminalID string) *Client` (30s timeout, language mn) plus
+`SetBaseURL`, `SetTimeout`, `SetTransport`, `SetLanguage`, `Close`. Files split by aggregate mirror the
 ports. The token lifecycle (`tokenSource`) stays inside the adapter unchanged; `Create` and
 `Refresh` are its exported entry points. Error decoding builds `*domain.APIError`; a 400
 whose envelope carries a FAILED Purchase becomes `*card.DeclinedError`.
 
 `wallet/adapters/httpapi.Client` implements `PaymentAPI`; constructor
-`New(baseURL string, timeout time.Duration, merchantKey string)`.
+`New(baseURL, merchantKey string)` (35s timeout).
 
 ### Facades
 
