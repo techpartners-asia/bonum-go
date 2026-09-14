@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/techpartners-asia/bonum-go/gateway/domain/checkout"
-	"github.com/techpartners-asia/bonum-go/gateway/domain/webhook"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain/checkout"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain/webhook"
 )
 
 const key = "checksum-key"

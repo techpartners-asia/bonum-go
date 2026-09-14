@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/techpartners-asia/bonum-go/gateway/domain"
-	"github.com/techpartners-asia/bonum-go/gateway/domain/qr"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain/qr"
 )
 
 func TestCreateQRInputValidate(t *testing.T) {

@@ -1,6 +1,6 @@
 package wallet
 
-import "github.com/techpartners-asia/bonum-go/wallet/domain/payment"
+import "github.com/techpartners-asia/bonum-go/internal/wallet/domain/payment"
 
 // Status is the lifecycle state of a V2 payment.
 type Status = payment.Status

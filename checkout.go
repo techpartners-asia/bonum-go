@@ -1,8 +1,8 @@
 package bonum
 
 import (
-	"github.com/techpartners-asia/bonum-go/gateway/application"
-	"github.com/techpartners-asia/bonum-go/gateway/domain/checkout"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/application"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain/checkout"
 )
 
 // InvoiceService is the Invoice aggregate's use cases: hosted checkout.

@@ -7,8 +7,8 @@ mapping would be ceremony without substance. The one transport detail we do hide
 mpay-service envelope (`traceId / message / data / status`): services unwrap `data` and
 return the aggregate. The trace id survives only on errors, where it is useful for support.
 
-Amended 2026-09-14 (ADR 0005): the wire types now live in `gateway/domain/<aggregate>` and
-`wallet/domain/<aggregate>` and still carry their JSON tags. The layered structure did not
+Amended 2026-09-14 (ADR 0005): the wire types now live in `internal/gateway/domain/<aggregate>`
+and `internal/wallet/domain/<aggregate>` and still carry their JSON tags. The layered structure did not
 introduce a DTO layer; the adapter serialises the domain struct directly. A CQRS-lite Command
 or Query type is a type alias to the domain input where one already exists (e.g.
 `type TokenizeCommand = card.TokenizeInput`), not a parallel struct — the same "no ceremony

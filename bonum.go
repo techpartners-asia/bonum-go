@@ -4,8 +4,9 @@
 // It is backend only. The AppSecret, checksum key and bearer tokens must never reach a
 // browser or mobile app. Apple Pay / Google Pay live in the separate wallet package.
 //
-// This package is a facade: it composes gateway/adapters/httpapi into the use cases in
-// gateway/application and re-exports the domain types so callers import only bonum.
+// This package is a facade: it composes internal/gateway/adapters/httpapi into the use cases
+// in internal/gateway/application and re-exports the domain types so callers import only
+// bonum. The internal packages are not importable outside this module by design.
 package bonum
 
 import (
@@ -13,8 +14,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/techpartners-asia/bonum-go/gateway/adapters/httpapi"
-	"github.com/techpartners-asia/bonum-go/gateway/application"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/adapters/httpapi"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/application"
 )
 
 // Environment selects which Bonum gateway host the client talks to.

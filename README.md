@@ -188,8 +188,10 @@ wallet Merchant Key and Signing Secret are issued by Bonum at onboarding.
 ## Layout
 
 Each bounded context is layered, with imports pointing inward (`tests/architecture`
-enforces it). Callers only ever import `bonum` and `wallet`; the layers are how the SDK is
-built, not how it is used.
+enforces it), and lives entirely under `internal/` — Go itself refuses to compile an import
+of it from outside this module, not just by convention. Callers only ever import `bonum` and
+`wallet`, the two public facade packages; the layers are how the SDK is built, not how it is
+used.
 
 ```
 bonum.go            Client, Environment, Lang, Option, New, Close, Authenticate, Refresh
@@ -199,17 +201,19 @@ access.go, checkout.go, card.go, subscription.go, qr.go, sandbox.go
                      one facade file per aggregate: its type aliases, its Service alias, and
                      any error specific to it (ErrDeclined/DeclinedError in card.go)
 webhook.go           webhook type aliases, ErrBadChecksum/ErrUnknownEvent, Checksum, ParseWebhook
-gateway/CONTEXT.md   Gateway glossary
-gateway/domain/      errors shared by the context, then one package per aggregate:
-                     access, checkout, card, subscription, qr, webhook
-gateway/ports/       interfaces the use cases call (one per aggregate)
-gateway/application/ CQRS-lite: commands/<aggregate> and queries/<aggregate> hold one
-                     Command/Query + Handler per use case; the package root holds one facade
-                     struct per aggregate (Access, Invoices, Cards, Subscriptions, QR,
-                     Sandbox) that keeps the old per-aggregate method names
-gateway/adapters/httpapi/
-                     resty implementation of every port: token lifecycle, envelope,
-                     error decoding, decline detection
+
+internal/gateway/CONTEXT.md   Gateway glossary
+internal/gateway/domain/      errors shared by the context, then one package per aggregate:
+                               access, checkout, card, subscription, qr, webhook
+internal/gateway/ports/       interfaces the use cases call (one per aggregate)
+internal/gateway/application/ CQRS-lite: commands/<aggregate> and queries/<aggregate> hold one
+                               Command/Query + Handler per use case; the package root holds
+                               one facade struct per aggregate (Access, Invoices, Cards,
+                               Subscriptions, QR, Sandbox) that keeps the old per-aggregate
+                               method names
+internal/gateway/adapters/httpapi/
+                               resty implementation of every port: token lifecycle, envelope,
+                               error decoding, decline detection
 
 wallet/wallet.go     Client, Environment, Option, New, Close, the six payment methods
 wallet/errors.go     errors shared by the Payment aggregate: ErrInvalidInput, ErrUnauthorized,
@@ -217,16 +221,18 @@ wallet/errors.go     errors shared by the Payment aggregate: ErrInvalidInput, Er
 wallet/payment.go    Payment aggregate type aliases (Status, ProcessApplePayInput, Payment, ...)
 wallet/webhook.go    webhook type alias, ErrMissingSignature/ErrTimestampExpired/
                      ErrSignatureMismatch, Sign, ParseWebhook
-wallet/CONTEXT.md    Wallet glossary
-wallet/domain/, ports/, application/, adapters/httpapi/
-                     same layering (and same CQRS-lite application split) for
-                     Apple Pay / Google Pay
+
+internal/wallet/CONTEXT.md    Wallet glossary
+internal/wallet/domain/, ports/, application/, adapters/httpapi/
+                               same layering (and same CQRS-lite application split) for
+                               Apple Pay / Google Pay
 
 internal/rest/       HTTP execution adapter shared by both contexts
 tests/gateway, tests/wallet
                      fake-server suites that cross only the facade
 tests/*/domain, tests/*/application
-                     invariant and fake-port tests, no HTTP
+                     invariant and fake-port tests, no HTTP, importing internal/<context>/...
+                     directly (tests live inside this module, so they can)
 tests/architecture   import-direction rule
 tests/smoke          manual run against the sandbox
 docs/adr/            why the API is shaped this way

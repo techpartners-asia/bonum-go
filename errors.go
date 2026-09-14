@@ -1,6 +1,6 @@
 package bonum
 
-import "github.com/techpartners-asia/bonum-go/gateway/domain"
+import "github.com/techpartners-asia/bonum-go/internal/gateway/domain"
 
 // Sentinel errors shared by every aggregate. Match them with errors.Is; the concrete
 // *APIError / *ValidationError is still available through errors.As. Aggregate-specific

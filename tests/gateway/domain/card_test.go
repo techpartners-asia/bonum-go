@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/techpartners-asia/bonum-go/gateway/domain"
-	"github.com/techpartners-asia/bonum-go/gateway/domain/card"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain/card"
 )
 
 func TestTokenizeInputValidate(t *testing.T) {

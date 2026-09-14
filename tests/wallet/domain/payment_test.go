@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/techpartners-asia/bonum-go/wallet/domain"
-	"github.com/techpartners-asia/bonum-go/wallet/domain/payment"
+	"github.com/techpartners-asia/bonum-go/internal/wallet/domain"
+	"github.com/techpartners-asia/bonum-go/internal/wallet/domain/payment"
 )
 
 func appleToken() payment.ApplePayToken {

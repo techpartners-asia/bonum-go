@@ -5,8 +5,9 @@
 // and an asynchronous result model. Your mobile app or web page collects the
 // encrypted wallet token; this package is for the backend that forwards it.
 //
-// This package is a facade: it composes wallet/adapters/httpapi into the use cases in
-// wallet/application and re-exports the domain types so callers import only wallet.
+// This package is a facade: it composes internal/wallet/adapters/httpapi into the use cases
+// in internal/wallet/application and re-exports the domain types so callers import only
+// wallet. The internal packages are not importable outside this module by design.
 package wallet
 
 import (
@@ -14,8 +15,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/techpartners-asia/bonum-go/wallet/adapters/httpapi"
-	"github.com/techpartners-asia/bonum-go/wallet/application"
+	"github.com/techpartners-asia/bonum-go/internal/wallet/adapters/httpapi"
+	"github.com/techpartners-asia/bonum-go/internal/wallet/application"
 )
 
 // Environment selects which Bonum PSP host the client talks to.

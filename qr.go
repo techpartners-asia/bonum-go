@@ -1,8 +1,8 @@
 package bonum
 
 import (
-	"github.com/techpartners-asia/bonum-go/gateway/application"
-	"github.com/techpartners-asia/bonum-go/gateway/domain/qr"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/application"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain/qr"
 )
 
 // QRService is the QR Invoice aggregate's use cases: QPay-compatible QR and deeplink payments.

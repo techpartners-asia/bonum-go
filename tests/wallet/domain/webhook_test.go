@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/techpartners-asia/bonum-go/wallet/domain/payment"
-	"github.com/techpartners-asia/bonum-go/wallet/domain/webhook"
+	"github.com/techpartners-asia/bonum-go/internal/wallet/domain/payment"
+	"github.com/techpartners-asia/bonum-go/internal/wallet/domain/webhook"
 )
 
 const (

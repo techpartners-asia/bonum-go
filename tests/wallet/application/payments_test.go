@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/techpartners-asia/bonum-go/wallet/application"
-	"github.com/techpartners-asia/bonum-go/wallet/domain"
-	"github.com/techpartners-asia/bonum-go/wallet/domain/payment"
+	"github.com/techpartners-asia/bonum-go/internal/wallet/application"
+	"github.com/techpartners-asia/bonum-go/internal/wallet/domain"
+	"github.com/techpartners-asia/bonum-go/internal/wallet/domain/payment"
 )
 
 var ctx = context.Background()

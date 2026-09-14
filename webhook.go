@@ -1,6 +1,6 @@
 package bonum
 
-import "github.com/techpartners-asia/bonum-go/gateway/domain/webhook"
+import "github.com/techpartners-asia/bonum-go/internal/gateway/domain/webhook"
 
 // Sentinel errors for webhook verification. Match them with errors.Is.
 var (

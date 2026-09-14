@@ -2,7 +2,10 @@
 // docs/superpowers/specs/2026-09-14-ddd-layered-contexts-design.md: inside each bounded
 // context, imports point inward (adapters -> ports/domain, application -> ports/domain,
 // ports -> domain, domain -> nothing), contexts never import each other, and only adapters
-// and facades may reach third-party code or internal/rest.
+// and facades may reach third-party code or internal/rest. Each context's domain, ports,
+// application and adapters live under internal/<context>/ so nothing outside this module can
+// import them at all; only the facade packages (bonum at the module root, wallet at wallet/)
+// are the public surface.
 package architecture_test
 
 import (
@@ -19,18 +22,26 @@ const module = "github.com/techpartners-asia/bonum-go"
 var contexts = []string{"gateway", "wallet"}
 
 // classify maps a directory (module-relative, slash separated) to its context and layer.
-// It returns ok=false for directories the rule does not cover (tests, internal).
+// It returns ok=false for directories the rule does not cover (tests, internal/rest, or
+// internal/<context> itself, which holds no .go files directly).
 func classify(dir string) (ctx, layer string, ok bool) {
 	if dir == "." {
 		return "gateway", "facade", true
 	}
-	parts := strings.Split(dir, "/")
+	if dir == "wallet" {
+		return "wallet", "facade", true
+	}
+	rel, isInternal := strings.CutPrefix(dir, "internal/")
+	if !isInternal {
+		return "", "", false
+	}
+	parts := strings.Split(rel, "/")
 	for _, c := range contexts {
 		if parts[0] != c {
 			continue
 		}
 		if len(parts) == 1 {
-			return c, "facade", true
+			return "", "", false // internal/<context> itself: CONTEXT.md only, no .go files
 		}
 		return c, parts[1], true
 	}
@@ -47,32 +58,39 @@ func allowed(ctx, layer, imp string) bool {
 	if isStdlib(imp) {
 		return true
 	}
-	rel, internal := strings.CutPrefix(imp, module+"/")
-	if !internal {
+	rel, isModuleInternal := strings.CutPrefix(imp, module+"/")
+	if !isModuleInternal {
 		return layer == "adapters" || layer == "facade"
 	}
+	// Neither context may reach the other's internal tree or facade package.
 	for _, other := range contexts {
-		if other != ctx && (rel == other || strings.HasPrefix(rel, other+"/")) {
+		if other == ctx {
+			continue
+		}
+		if rel == other || strings.HasPrefix(rel, other+"/") ||
+			rel == "internal/"+other || strings.HasPrefix(rel, "internal/"+other+"/") {
 			return false
 		}
 	}
-	domain := strings.HasPrefix(rel, ctx+"/domain")
-	ports := rel == ctx+"/ports"
-	application := strings.HasPrefix(rel, ctx+"/application/")
+	ownPrefix := "internal/" + ctx + "/"
+	own := strings.HasPrefix(rel, ownPrefix)
+	domain := own && strings.HasPrefix(rel, ownPrefix+"domain")
+	ports := rel == ownPrefix+"ports"
+	// application also covers its own commands/<aggregate> and queries/<aggregate>
+	// subpackages (CQRS-lite): a facade file imports those, and each of those imports
+	// only domain + ports, same as any other application-layer file.
+	application := own && strings.HasPrefix(rel, ownPrefix+"application/")
 	switch layer {
 	case "domain":
 		return domain
 	case "ports":
 		return domain
 	case "application":
-		// application also covers its own commands/<aggregate> and queries/<aggregate>
-		// subpackages (CQRS-lite): a facade file imports those, and each of those
-		// imports only domain + ports, same as any other application-layer file.
 		return domain || ports || application
 	case "adapters":
 		return domain || ports || rel == "internal/rest"
 	case "facade":
-		return strings.HasPrefix(rel, ctx+"/") || rel == "internal/rest"
+		return own || rel == "internal/rest"
 	}
 	return false
 }
@@ -124,11 +142,12 @@ func TestRuleCatchesViolations(t *testing.T) {
 	bad := []struct{ ctx, layer, imp string }{
 		{"gateway", "domain", module + "/internal/rest"},
 		{"gateway", "domain", "resty.dev/v3"},
-		{"gateway", "application", module + "/gateway/adapters/httpapi"},
-		{"gateway", "ports", module + "/gateway/application"},
-		{"gateway", "adapters", module + "/wallet/domain"},
-		{"wallet", "facade", module + "/gateway/domain"},
-		{"gateway", "application", module + "/wallet/application/commands/payment"},
+		{"gateway", "application", module + "/internal/gateway/adapters/httpapi"},
+		{"gateway", "ports", module + "/internal/gateway/application"},
+		{"gateway", "adapters", module + "/internal/wallet/domain"},
+		{"gateway", "facade", module + "/wallet"},
+		{"wallet", "facade", module + "/internal/gateway/domain"},
+		{"gateway", "application", module + "/internal/wallet/application/commands/payment"},
 	}
 	for _, b := range bad {
 		if allowed(b.ctx, b.layer, b.imp) {
@@ -137,12 +156,12 @@ func TestRuleCatchesViolations(t *testing.T) {
 	}
 	good := []struct{ ctx, layer, imp string }{
 		{"gateway", "domain", "encoding/json"},
-		{"gateway", "domain", module + "/gateway/domain/checkout"},
-		{"gateway", "application", module + "/gateway/ports"},
-		{"gateway", "application", module + "/gateway/application/commands/card"},
-		{"wallet", "application", module + "/wallet/application/queries/payment"},
+		{"gateway", "domain", module + "/internal/gateway/domain/checkout"},
+		{"gateway", "application", module + "/internal/gateway/ports"},
+		{"gateway", "application", module + "/internal/gateway/application/commands/card"},
+		{"wallet", "application", module + "/internal/wallet/application/queries/payment"},
 		{"gateway", "adapters", "resty.dev/v3"},
-		{"wallet", "facade", module + "/wallet/application"},
+		{"wallet", "facade", module + "/internal/wallet/application"},
 	}
 	for _, g := range good {
 		if !allowed(g.ctx, g.layer, g.imp) {

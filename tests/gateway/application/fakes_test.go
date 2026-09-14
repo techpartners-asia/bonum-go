@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/techpartners-asia/bonum-go/gateway/domain/access"
-	"github.com/techpartners-asia/bonum-go/gateway/domain/card"
-	"github.com/techpartners-asia/bonum-go/gateway/domain/checkout"
-	"github.com/techpartners-asia/bonum-go/gateway/domain/qr"
-	"github.com/techpartners-asia/bonum-go/gateway/domain/subscription"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain/access"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain/card"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain/checkout"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain/qr"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain/subscription"
 )
 
 var ctx = context.Background()

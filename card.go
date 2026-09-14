@@ -1,8 +1,8 @@
 package bonum
 
 import (
-	"github.com/techpartners-asia/bonum-go/gateway/application"
-	"github.com/techpartners-asia/bonum-go/gateway/domain/card"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/application"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain/card"
 )
 
 // CardService is the Card Token aggregate's use cases: tokenization and charges against

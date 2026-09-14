@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/techpartners-asia/bonum-go/gateway/domain"
-	"github.com/techpartners-asia/bonum-go/gateway/domain/subscription"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain/subscription"
 )
 
 func TestSubscribeInputValidate(t *testing.T) {

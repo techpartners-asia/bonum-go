@@ -1,8 +1,8 @@
 package bonum
 
 import (
-	"github.com/techpartners-asia/bonum-go/gateway/application"
-	"github.com/techpartners-asia/bonum-go/gateway/domain/subscription"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/application"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain/subscription"
 )
 
 // SubscriptionService is the Subscription aggregate's use cases: recurring charges on a

@@ -1,6 +1,6 @@
 package wallet
 
-import "github.com/techpartners-asia/bonum-go/wallet/domain"
+import "github.com/techpartners-asia/bonum-go/internal/wallet/domain"
 
 // Sentinel errors shared by every aggregate. Match them with errors.Is; the concrete
 // *APIError / *ValidationError is still available through errors.As. Webhook-specific

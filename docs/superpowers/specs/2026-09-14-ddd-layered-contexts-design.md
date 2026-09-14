@@ -21,6 +21,19 @@ aliases). Wallet gets the same split via a new `errors.go`, a `payment.go` in pl
 exported identifier changed — so it needed no test changes and no adapter/domain/ports
 changes; see the Layout and Facades sections below for the resulting shape.
 
+**Amended 2026-09-14 (third):** the user asked to separate the public package from
+everything internal, matching the pre-existing `internal/rest` pattern. Resolved as: each
+context's `domain`, `ports`, `application` and `adapters` move under `internal/<context>/`
+(`internal/gateway/...`, `internal/wallet/...`), while the two public facade packages —
+`bonum` at the module root and `wallet` at `wallet/` — keep their location and import path
+exactly as-is. This makes "callers only import `bonum` and `wallet`" a compiler-enforced
+guarantee instead of a documented convention: Go refuses to build an import of an `internal/`
+package from outside the module tree it lives under. Only import paths changed — every
+exported identifier, every test's behavior, and both facades' public shape are unchanged, so
+this needed no test rewrites, only import-path updates (including inside
+`tests/architecture`, whose `classify`/`allowed` functions now resolve the `internal/`
+prefix). See Layout and the Dependency rule below for the resulting shape.
+
 ## Goal
 
 Restructure the SDK so each bounded context (Gateway, Wallet) is a folder with explicit
@@ -56,7 +69,7 @@ access.go, checkout.go, card.go, subscription.go, qr.go, sandbox.go
 webhook.go          facade: webhook type aliases, ErrBadChecksum/ErrUnknownEvent,
                     ChecksumHeader, Checksum, ParseWebhook wrapper
 
-gateway/
+internal/gateway/   not importable outside this module (Go's internal/ visibility rule)
   CONTEXT.md        moved from the repo root, unchanged
   domain/           package domain: ErrInvalidInput, ErrUnauthorized, ErrNotFound,
                     ErrRateLimited, APIError, ValidationError, Invalid(field, reason)
@@ -91,6 +104,8 @@ wallet/
                     Payment, AwaitResult, MaxAwaitTimeout, ...)
   webhook.go        facade: webhook type alias, ErrMissingSignature/ErrTimestampExpired/
                     ErrSignatureMismatch, Sign, ParseWebhook wrapper
+
+internal/wallet/    not importable outside this module (Go's internal/ visibility rule)
   CONTEXT.md        unchanged
   domain/           package domain: ErrInvalidInput, ErrUnauthorized, ErrNotFound,
                     ErrRateLimited, APIError, ValidationError, Invalid
@@ -106,11 +121,12 @@ wallet/
                     one facade struct (Payments) with the old method names and NewPayments
   adapters/httpapi/ package httpapi: Client (implements PaymentAPI), error decoding
 
-internal/rest/      unchanged
+internal/rest/      unchanged; the only internal/ package that isn't context-owned
 tests/
   architecture/     deps_test.go: import-direction rules (see below)
   gateway/          existing facade suites, unchanged
-  gateway/domain/   Validate tables per input type; webhook Parse edge cases
+  gateway/domain/   Validate tables per input type; webhook Parse edge cases, importing
+                    internal/gateway/domain/... directly (tests live inside the module)
   gateway/application/  services against hand-written fake ports
   wallet/           existing facade suites, unchanged
   wallet/domain/    Validate tables; ParseAt replay window with a fixed clock
@@ -129,18 +145,25 @@ Enforced by `tests/architecture/deps_test.go`, which parses every non-test Go fi
 
 | Package pattern | May import (inside the module) |
 |---|---|
-| `<ctx>/domain/**` | `<ctx>/domain`, sibling `<ctx>/domain/*` packages |
-| `<ctx>/ports` | `<ctx>/domain/**` |
-| `<ctx>/application/**` | `<ctx>/domain/**`, `<ctx>/ports`, sibling `<ctx>/application/**` packages |
-| `<ctx>/adapters/**` | `<ctx>/domain/**`, `<ctx>/ports`, `internal/rest` |
-| facade (`bonum`, `wallet`) | anything in its own context, `internal/rest` |
-| any `gateway/**` | never `wallet/**`, and vice versa |
+| `internal/<ctx>/domain/**` | `internal/<ctx>/domain`, sibling `internal/<ctx>/domain/*` packages |
+| `internal/<ctx>/ports` | `internal/<ctx>/domain/**` |
+| `internal/<ctx>/application/**` | `internal/<ctx>/domain/**`, `internal/<ctx>/ports`, sibling `internal/<ctx>/application/**` packages |
+| `internal/<ctx>/adapters/**` | `internal/<ctx>/domain/**`, `internal/<ctx>/ports`, `internal/rest` |
+| facade (`bonum`, `wallet`) | anything in its own `internal/<ctx>/**`, `internal/rest` |
+| any `internal/gateway/**` or the `bonum` facade | never `internal/wallet/**` or the `wallet` facade, and vice versa |
 
-`<ctx>/application/**` covers the package root (the aggregate facades) and its
+`internal/<ctx>/application/**` covers the package root (the aggregate facades) and its
 `commands/<aggregate>` and `queries/<aggregate>` subpackages alike: all three are the same
 layer, so a facade importing its own Handlers is an intra-layer dependency, not a violation.
 Additionally `domain/**`, `ports` and `application/**` may import only the standard library
 outside the module (no resty, no `internal/rest`). The test lists offending file and import.
+
+Putting each context under `internal/<ctx>/` (see the third amendment above) adds a second,
+compiler-enforced guarantee on top of this table: no package outside this module can import
+`internal/gateway/**` or `internal/wallet/**` at all, regardless of what this table says.
+This table still matters *inside* the module — Go's `internal/` rule does not stop
+`internal/gateway/adapters` from importing `internal/gateway/domain` the wrong way round, only
+`tests/architecture` does.
 
 ## Layer contracts
 
@@ -162,7 +185,7 @@ outside the module (no resty, no `internal/rest`). The test lists offending file
 ### Ports (interfaces the application layer depends on)
 
 ```go
-// gateway/ports — method names are unique across all six interfaces because one adapter
+// internal/gateway/ports — method names are unique across all six interfaces because one adapter
 // struct implements every port.
 type AccessAPI interface {
     CreateToken(ctx) (*access.TokenPair, error)
@@ -197,7 +220,7 @@ type SandboxAPI interface {
     RunSubscriptionBilling(ctx, id int64) error
 }
 
-// wallet/ports
+// internal/wallet/ports
 type PaymentAPI interface {
     ProcessApplePay(ctx, payment.ProcessApplePayInput) (*payment.ProcessResponse, error)
     ProcessGooglePay(ctx, payment.ProcessGooglePayInput) (*payment.ProcessResponse, error)
@@ -248,7 +271,7 @@ import unaliased — applied consistently, this needs no per-file special-casing
 
 ### Adapters
 
-`gateway/adapters/httpapi.Client` is one struct implementing all six gateway ports, with a
+`internal/gateway/adapters/httpapi.Client` is one struct implementing all six gateway ports, with a
 compile-time assertion per port. Constructor
 `New(baseURL, appSecret, terminalID string) *Client` (30s timeout, language mn) plus
 `SetBaseURL`, `SetTimeout`, `SetTransport`, `SetLanguage`, `Close`. Files split by aggregate mirror the
@@ -256,7 +279,7 @@ ports. The token lifecycle (`tokenSource`) stays inside the adapter unchanged; `
 `Refresh` are its exported entry points. Error decoding builds `*domain.APIError`; a 400
 whose envelope carries a FAILED Purchase becomes `*card.DeclinedError`.
 
-`wallet/adapters/httpapi.Client` implements `PaymentAPI`; constructor
+`internal/wallet/adapters/httpapi.Client` implements `PaymentAPI`; constructor
 `New(baseURL, merchantKey string)` (35s timeout).
 
 ### Facades

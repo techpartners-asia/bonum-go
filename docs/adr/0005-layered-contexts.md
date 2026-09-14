@@ -1,4 +1,4 @@
-# Each context is layered domain / ports / application / adapters, CQRS-lite
+# Each context is layered domain / ports / application / adapters, CQRS-lite, under internal/
 
 The gateway and wallet contexts were flat packages: aggregate types, validation, HTTP calls
 and error decoding in one file per aggregate. That was compact but had three costs. A
@@ -41,3 +41,15 @@ or mediator (each aggregate facade dispatches to its own Handlers directly, so t
 nothing here for a bus to decouple), no domain events (nothing consumes them), no
 repositories or unit of work (an SDK has no persistence), and no separate DTO layer (ADR
 0002). Each of those would be a seam with no consumer.
+
+Both contexts' `domain`, `ports`, `application` and `adapters` now live under `internal/`:
+`internal/gateway/...` and `internal/wallet/...`, alongside the pre-existing `internal/rest`.
+`tests/architecture` already enforced that only `bonum` and `wallet` are the intended public
+surface, but that was a convention a merchant could still route around — before this move,
+nothing stopped an external module from importing `.../bonum-go/gateway/domain/card` directly.
+Moving the layers under `internal/` makes that a compiler error instead: Go refuses to build
+an import of an `internal/` package from outside the module tree it lives under.
+`tests/architecture` still does its job — it catches an inward-import violation *inside* the
+module, which `internal/` visibility does not — so the two mechanisms are complementary, not
+redundant. The move only touched import paths: every exported identifier, every test, and
+the two facades' public shape are unchanged.

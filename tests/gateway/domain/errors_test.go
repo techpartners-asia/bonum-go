@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/techpartners-asia/bonum-go/gateway/domain"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain"
 )
 
 func TestAPIErrorMapsStatusToSentinels(t *testing.T) {

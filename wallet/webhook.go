@@ -1,6 +1,6 @@
 package wallet
 
-import "github.com/techpartners-asia/bonum-go/wallet/domain/webhook"
+import "github.com/techpartners-asia/bonum-go/internal/wallet/domain/webhook"
 
 // Sentinel errors for webhook verification. Match them with errors.Is.
 var (
