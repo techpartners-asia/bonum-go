@@ -2,6 +2,14 @@
 
 Date: 2026-09-14. Status: approved.
 
+**Amended 2026-09-14 (mid-execution):** the user asked for CQRS after Tasks 1-3 (domain
+layer) were already implemented on `ddd-layers`. This amendment changes only the
+**Application** layer contract below (now CQRS-lite: one Command/Query + Handler per use
+case) and the parts of Layout/Dependency rule/Documentation that describe it. Domain, ports,
+adapters and facades — and everything already built before the amendment — are unchanged,
+because the facade's public method names and `NewX(port)` constructor signatures stay
+identical either way.
+
 ## Goal
 
 Restructure the SDK so each bounded context (Gateway, Wallet) is a folder with explicit
@@ -14,9 +22,12 @@ modification. That is the compatibility contract.
 
 ## Non-goals (deliberately left out)
 
-- No per-use-case handler structs, domain events, unit of work, outbox or repositories.
-  An SDK has no persistence and no async consumers; every such seam would have no consumer.
-- No separate DTO layer. ADR 0002 stands: domain structs carry the JSON tags Bonum documents.
+- No generic command bus, mediator, or reflection-based dispatch. Each aggregate facade
+  calls its own Handlers directly; there is nothing here for a bus to decouple.
+- No domain events, unit of work, outbox or repositories. An SDK has no persistence and no
+  async consumers; every such seam would have no consumer.
+- No separate DTO layer. ADR 0002 stands: domain structs carry the JSON tags Bonum documents;
+  a Command/Query is a type alias to the domain input where one already exists.
 - No change to `internal/rest`.
 - No change to the vendor protocol, paths, headers or error mapping.
 
@@ -47,7 +58,11 @@ gateway/
                     ErrUnknownEvent, Checksum, Parse
   ports/            package ports: AccessAPI, CheckoutAPI, CardAPI, SubscriptionAPI, QRAPI,
                     SandboxAPI
-  application/      package application: Access, Invoices, Cards, Subscriptions, QR, Sandbox
+  application/      CQRS-lite. commands/<aggregate> and queries/<aggregate> hold one
+                    Command/Query type + *Handler per use case; the package root holds one
+                    facade struct per aggregate (Access, Invoices, Cards, Subscriptions, QR,
+                    Sandbox) that keeps the old per-aggregate method names and NewX(port)
+                    constructors, delegating to its Handlers
   adapters/httpapi/ package httpapi: Client (implements all six ports), token lifecycle,
                     envelope unwrapping, request options, error decoding, decline detection
 
@@ -64,7 +79,9 @@ wallet/
                     ErrMissingSignature, ErrTimestampExpired, ErrSignatureMismatch, Sign,
                     Parse, ParseAt
   ports/            package ports: PaymentAPI
-  application/      package application: Payments
+  application/      CQRS-lite, same shape as gateway: commands/payment and queries/payment
+                    hold one Command/Query + *Handler per use case; the package root holds
+                    one facade struct (Payments) with the old method names and NewPayments
   adapters/httpapi/ package httpapi: Client (implements PaymentAPI), error decoding
 
 internal/rest/      unchanged
@@ -92,12 +109,15 @@ Enforced by `tests/architecture/deps_test.go`, which parses every non-test Go fi
 |---|---|
 | `<ctx>/domain/**` | `<ctx>/domain`, sibling `<ctx>/domain/*` packages |
 | `<ctx>/ports` | `<ctx>/domain/**` |
-| `<ctx>/application` | `<ctx>/domain/**`, `<ctx>/ports` |
+| `<ctx>/application/**` | `<ctx>/domain/**`, `<ctx>/ports`, sibling `<ctx>/application/**` packages |
 | `<ctx>/adapters/**` | `<ctx>/domain/**`, `<ctx>/ports`, `internal/rest` |
 | facade (`bonum`, `wallet`) | anything in its own context, `internal/rest` |
 | any `gateway/**` | never `wallet/**`, and vice versa |
 
-Additionally `domain/**`, `ports` and `application` may import only the standard library
+`<ctx>/application/**` covers the package root (the aggregate facades) and its
+`commands/<aggregate>` and `queries/<aggregate>` subpackages alike: all three are the same
+layer, so a facade importing its own Handlers is an intra-layer dependency, not a violation.
+Additionally `domain/**`, `ports` and `application/**` may import only the standard library
 outside the module (no resty, no `internal/rest`). The test lists offending file and import.
 
 ## Layer contracts
@@ -169,16 +189,40 @@ type PaymentAPI interface {
 Ports receive an already-validated input and an already-capped timeout. The adapter never
 validates.
 
-### Application
+### Application (CQRS-lite)
 
-One struct per aggregate with a `New<Name>(port)` constructor and one method per use case,
-keeping today's method names so the facade aliases them without renaming. A method body is:
-validate (domain `Validate()` or an argument non-empty check) → call the port → return.
-`Payments.Await` and `AwaitURL` additionally clamp `timeout` to `MaxAwaitTimeout`; the port
+Every use case is one of:
+
+- a **Command**, under `application/commands/<aggregate>/`, for anything that changes state
+  at Bonum (tokenize, purchase, reverse, create an invoice/QR, subscribe, change/unsubscribe/
+  delete a subscription, mark an invoice paid, run a billing cycle, submit a wallet token);
+- a **Query**, under `application/queries/<aggregate>/`, for anything that only reads state
+  (list providers/plans/subscriptions, look up a QR/invoice/payment, await a payment's
+  outcome — `Await*` blocks but never mutates, so it is a Query).
+
+Each use case gets its own file: a Command/Query type (a type alias to the existing domain
+input where one already exists, e.g. `type TokenizeCommand = card.TokenizeInput`; a small
+struct when the port needs extra addressing like a card token or subscription ID; nothing at
+all as a parameter when the use case is niladic — `Handle(ctx)` with no input, for
+`Providers`, `Plans`, `Authenticate`, `Refresh`) plus a `*Handler` with a `New<UseCase>Handler(port)`
+constructor and a `Handle(ctx, ...) (result, error)` method. A Handle body is: validate
+(domain `Validate()`, or an argument non-empty check, when the use case takes one) → call the
+port → return. `AwaitPayment`/`AwaitURL` additionally clamp `Timeout` to `MaxAwaitTimeout`
+inside their Query's Handler (`clampAwait`, defined once in `queries/payment`); the port
 receives 0 for "server default".
 
-`application.Access` wraps `AccessAPI` as `Authenticate` and `Refresh` so the facade never
-calls a port directly.
+One facade struct per aggregate lives at the `application` package root (`Access`,
+`Invoices`, `Cards`, `Subscriptions`, `QR`, `Sandbox`, `Payments`), each still built by
+`New<Name>(port)` and still exposing exactly today's method names and signatures — the
+facade holds its aggregate's Handlers and each method is a one-line `return
+s.<handler>.Handle(ctx, ...)`. This is what keeps the amendment's blast radius inside
+`application/`: ports, adapters and the root `bonum`/`wallet` facades never change, because
+from their side an aggregate's public shape is identical to a non-CQRS build.
+
+Where a `commands/<aggregate>` or `queries/<aggregate>` package would collide on import with
+the domain package of the same name (both, e.g., named `card`), alias the two application-
+layer imports as `<aggregate>cmd` / `<aggregate>qry` in the facade file and leave the domain
+import unaliased — applied consistently, this needs no per-file special-casing.
 
 ### Adapters
 
@@ -211,15 +255,21 @@ wrappers (`ParseWebhook`, `Checksum`, wallet `Sign`, `ParseWebhook`) keep their 
 - All existing tests stay byte-for-byte unchanged and green.
 - Domain tests are table tests over `Validate()` and the webhook parsers, no HTTP.
 - Application tests use small fake port structs that record the last call and return a
-  configured result or error. They assert: invalid input never reaches the port, valid input
-  is forwarded unchanged, port errors pass through unwrapped, await timeouts are clamped.
+  configured result or error, exercised through each aggregate's facade (`application.NewCards(fake)`,
+  not through an individual Handler constructor). They assert: invalid input never reaches
+  the port, valid input is forwarded unchanged, port errors pass through unwrapped, await
+  timeouts are clamped. This is unchanged by the CQRS-lite split: the facade's public method
+  is still the one test surface, and it now happens to delegate to a Handler instead of
+  calling the port inline — no separate per-Handler test tier, since a Handler has no
+  behaviour a facade-level test cannot already see.
 - The architecture test fails with a readable list of `file: forbidden import` lines.
 - Verification command: `go build ./... && go vet ./... && go test ./...`.
 
 ## Documentation
 
 - `docs/adr/0005-layered-contexts.md`: why an SDK gets layers (mockable ports, resty isolated
-  in adapters, rules testable without HTTP) and the list of non-goals above.
+  in adapters, rules testable without HTTP), why the application layer is CQRS-lite
+  (Command/Query + Handler per use case, no bus), and the list of non-goals above.
 - Amend ADR 0002: domain packages still carry JSON tags. Amend ADR 0004: tests mirror the
   layer folders; the wallet `ParseAt` clock parameter is a real API, not a test hook.
 - `CONTEXT-MAP.md` links to `gateway/CONTEXT.md`; README layout section rewritten;

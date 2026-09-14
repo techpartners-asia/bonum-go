@@ -882,12 +882,17 @@ git commit -m "Add gateway webhook aggregate"
 ### Task 4: Gateway ports and application services
 
 **Files:**
-- Create: `gateway/ports/ports.go`, `gateway/application/access.go`, `gateway/application/invoices.go`, `gateway/application/cards.go`, `gateway/application/subscriptions.go`, `gateway/application/qr.go`, `gateway/application/sandbox.go`
+- Create: `gateway/ports/ports.go`
+- Create (commands, one write use case per file): `gateway/application/commands/access/authenticate.go`, `gateway/application/commands/access/refresh.go`, `gateway/application/commands/checkout/create_invoice.go`, `gateway/application/commands/card/tokenize.go`, `gateway/application/commands/card/purchase.go`, `gateway/application/commands/card/reverse.go`, `gateway/application/commands/subscription/subscribe.go`, `gateway/application/commands/subscription/change_card_by_tokenizing.go`, `gateway/application/commands/subscription/change_card.go`, `gateway/application/commands/subscription/unsubscribe.go`, `gateway/application/commands/subscription/delete.go`, `gateway/application/commands/qr/create_qr.go`, `gateway/application/commands/qr/pay_qr.go`, `gateway/application/commands/sandbox/mark_invoice_paid.go`, `gateway/application/commands/sandbox/run_subscription_billing.go`
+- Create (queries, one read use case per file): `gateway/application/queries/checkout/providers.go`, `gateway/application/queries/subscription/plans.go`, `gateway/application/queries/subscription/list_subscriptions.go`, `gateway/application/queries/qr/lookup_qr.go`, `gateway/application/queries/sandbox/invoice_status.go`
+- Create (facades, one per aggregate, unchanged public shape): `gateway/application/access.go`, `gateway/application/invoices.go`, `gateway/application/cards.go`, `gateway/application/subscriptions.go`, `gateway/application/qr.go`, `gateway/application/sandbox.go`
 - Test: `tests/gateway/application/fakes_test.go`, `tests/gateway/application/services_test.go`
+
+**CQRS-lite:** every write use case is a Command type + a `*Handler` with `Handle(ctx, cmd) (result, error)` under `gateway/application/commands/<aggregate>/`; every read use case is a Query (or a niladic `Handle(ctx)`) + `*Handler` under `gateway/application/queries/<aggregate>/`. A Command that already matches an existing domain input is a type alias (`type TokenizeCommand = card.TokenizeInput`) — no parallel struct, per ADR 0002. A facade struct per aggregate (`Cards`, `Invoices`, ...) holds the aggregate's handlers and keeps the exact public method names and signatures the rest of the plan (Task 6) already wires up, so nothing outside `gateway/application/` needs to change. Where a commands/<aggregate> or queries/<aggregate> package would collide on import with the domain package of the same name, alias the application-layer import as `<aggregate>cmd` / `<aggregate>qry` and leave the domain import unaliased — do this consistently in every facade file that imports both.
 
 **Interfaces:**
 - Consumes: all Task 1–3 domain types.
-- Produces: the six port interfaces exactly as in the spec; `application.NewAccess(ports.AccessAPI) *Access` with `Authenticate/Refresh`; `NewInvoices(ports.CheckoutAPI) *Invoices` with `Providers/Create`; `NewCards(ports.CardAPI) *Cards` with `Tokenize/Purchase/Reverse`; `NewSubscriptions(ports.SubscriptionAPI) *Subscriptions` with `Plans/Subscribe/List/ChangeCardByTokenizing/ChangeCard/Unsubscribe/Delete`; `NewQR(ports.QRAPI) *QR` with `Create/Lookup/PayWithCard`; `NewSandbox(ports.SandboxAPI) *Sandbox` with `InvoiceStatus/MarkInvoicePaid/RunSubscriptionBilling`.
+- Produces: the six port interfaces exactly as in the spec (unchanged from a non-CQRS build); `application.NewAccess(ports.AccessAPI) *Access` with `Authenticate/Refresh`; `NewInvoices(ports.CheckoutAPI) *Invoices` with `Providers/Create`; `NewCards(ports.CardAPI) *Cards` with `Tokenize/Purchase/Reverse`; `NewSubscriptions(ports.SubscriptionAPI) *Subscriptions` with `Plans/Subscribe/List/ChangeCardByTokenizing/ChangeCard/Unsubscribe/Delete`; `NewQR(ports.QRAPI) *QR` with `Create/Lookup/PayWithCard`; `NewSandbox(ports.SandboxAPI) *Sandbox` with `InvoiceStatus/MarkInvoicePaid/RunSubscriptionBilling`. Internally, each of those also exposes the constituent `*Handler` types listed below, for anyone who wants a single use case without the aggregate facade.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1210,11 +1215,10 @@ type SandboxAPI interface {
 }
 ```
 
-`gateway/application/access.go`:
+`gateway/application/commands/access/authenticate.go`:
 ```go
-// Package application holds the Gateway use cases: one service per aggregate, one method per
-// use case. A method validates its input against the domain, calls the port, and returns.
-package application
+// Package access holds the Access aggregate's commands: forcing a fresh token or refresh.
+package access
 
 import (
 	"context"
@@ -1223,20 +1227,581 @@ import (
 	"github.com/techpartners-asia/bonum-go/gateway/ports"
 )
 
+// AuthenticateHandler forces a fresh TokenPair via auth/create. The endpoint is rate
+// limited; do not call it in a loop.
+type AuthenticateHandler struct{ api ports.AccessAPI }
+
+func NewAuthenticateHandler(api ports.AccessAPI) *AuthenticateHandler {
+	return &AuthenticateHandler{api: api}
+}
+
+// Handle takes no input: Authenticate always re-derives credentials from the Terminal's
+// AppSecret held by the adapter.
+func (h *AuthenticateHandler) Handle(ctx context.Context) (*access.TokenPair, error) {
+	return h.api.CreateToken(ctx)
+}
+```
+
+`gateway/application/commands/access/refresh.go`:
+```go
+package access
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/gateway/domain/access"
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
+// RefreshHandler exchanges the cached refresh token for a new access token via auth/refresh.
+type RefreshHandler struct{ api ports.AccessAPI }
+
+func NewRefreshHandler(api ports.AccessAPI) *RefreshHandler { return &RefreshHandler{api: api} }
+
+func (h *RefreshHandler) Handle(ctx context.Context) (*access.TokenPair, error) {
+	return h.api.RefreshToken(ctx)
+}
+```
+
+`gateway/application/commands/checkout/create_invoice.go`:
+```go
+// Package checkout holds the Checkout aggregate's write use case: opening an Invoice.
+package checkout
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/gateway/domain/checkout"
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
+// CreateInvoiceCommand is the Invoice aggregate's create input.
+type CreateInvoiceCommand = checkout.CreateInvoiceInput
+
+// CreateInvoiceHandler opens an Invoice. Redirect the customer to FollowUpLink.
+type CreateInvoiceHandler struct{ api ports.CheckoutAPI }
+
+func NewCreateInvoiceHandler(api ports.CheckoutAPI) *CreateInvoiceHandler {
+	return &CreateInvoiceHandler{api: api}
+}
+
+func (h *CreateInvoiceHandler) Handle(ctx context.Context, cmd CreateInvoiceCommand) (*checkout.Invoice, error) {
+	if err := cmd.Validate(); err != nil {
+		return nil, err
+	}
+	return h.api.CreateInvoice(ctx, cmd)
+}
+```
+
+`gateway/application/queries/checkout/providers.go`:
+```go
+// Package checkout holds the Checkout aggregate's read use case: listing enabled providers.
+package checkout
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/gateway/domain/checkout"
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
+// ProvidersHandler lists the payment options currently enabled for the Terminal.
+type ProvidersHandler struct{ api ports.CheckoutAPI }
+
+func NewProvidersHandler(api ports.CheckoutAPI) *ProvidersHandler {
+	return &ProvidersHandler{api: api}
+}
+
+// Handle takes no input: Providers always reads the calling Terminal's configuration.
+func (h *ProvidersHandler) Handle(ctx context.Context) ([]checkout.PaymentProviderStatus, error) {
+	return h.api.Providers(ctx)
+}
+```
+
+`gateway/application/commands/card/tokenize.go`:
+```go
+// Package card holds the Card Token aggregate's write use cases: tokenization, purchases
+// and reversals.
+package card
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/gateway/domain/card"
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
+// TokenizeCommand starts a card tokenization flow.
+type TokenizeCommand = card.TokenizeInput
+
+// TokenizeHandler starts a card tokenization flow. Redirect the customer to FollowUpLink.
+type TokenizeHandler struct{ api ports.CardAPI }
+
+func NewTokenizeHandler(api ports.CardAPI) *TokenizeHandler { return &TokenizeHandler{api: api} }
+
+func (h *TokenizeHandler) Handle(ctx context.Context, cmd TokenizeCommand) (*card.Tokenization, error) {
+	if err := cmd.Validate(); err != nil {
+		return nil, err
+	}
+	return h.api.Tokenize(ctx, cmd)
+}
+```
+
+`gateway/application/commands/card/purchase.go`:
+```go
+package card
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/gateway/domain/card"
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
+// PurchaseCommand charges CardToken for the amount and details in the embedded PurchaseInput.
+type PurchaseCommand struct {
+	CardToken string
+	card.PurchaseInput
+}
+
+// PurchaseHandler charges a Card Token. Under load Bonum may answer with Status QUEUED; the
+// final result then arrives as a TokenPaymentEvent. A bank refusal is returned as
+// *card.DeclinedError.
+type PurchaseHandler struct{ api ports.CardAPI }
+
+func NewPurchaseHandler(api ports.CardAPI) *PurchaseHandler { return &PurchaseHandler{api: api} }
+
+func (h *PurchaseHandler) Handle(ctx context.Context, cmd PurchaseCommand) (*card.Purchase, error) {
+	if err := cmd.Validate(); err != nil {
+		return nil, err
+	}
+	return h.api.Purchase(ctx, cmd.CardToken, cmd.PurchaseInput)
+}
+```
+
+`gateway/application/commands/card/reverse.go`:
+```go
+package card
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
+// ReverseCommand rolls back a Purchase identified by the merchant TransactionID.
+type ReverseCommand struct {
+	CardToken     string
+	TransactionID string
+}
+
+type ReverseHandler struct{ api ports.CardAPI }
+
+func NewReverseHandler(api ports.CardAPI) *ReverseHandler { return &ReverseHandler{api: api} }
+
+func (h *ReverseHandler) Handle(ctx context.Context, cmd ReverseCommand) error {
+	return h.api.Reverse(ctx, cmd.CardToken, cmd.TransactionID)
+}
+```
+
+`gateway/application/commands/subscription/subscribe.go`:
+```go
+// Package subscription holds the Subscription aggregate's write use cases.
+package subscription
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/gateway/domain/subscription"
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
+// SubscribeCommand enrols CardToken in a Payment Plan.
+type SubscribeCommand struct {
+	CardToken string
+	subscription.SubscribeInput
+}
+
+// SubscribeHandler enrols a Card Token in a Payment Plan. If today matches CycleValue (or
+// PayNow is set) the first charge happens immediately.
+type SubscribeHandler struct{ api ports.SubscriptionAPI }
+
+func NewSubscribeHandler(api ports.SubscriptionAPI) *SubscribeHandler {
+	return &SubscribeHandler{api: api}
+}
+
+func (h *SubscribeHandler) Handle(ctx context.Context, cmd SubscribeCommand) (*subscription.Subscription, error) {
+	if err := cmd.Validate(); err != nil {
+		return nil, err
+	}
+	return h.api.Subscribe(ctx, cmd.CardToken, cmd.SubscribeInput)
+}
+```
+
+`gateway/application/commands/subscription/change_card_by_tokenizing.go`:
+```go
+package subscription
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/gateway/domain/card"
+	"github.com/techpartners-asia/bonum-go/gateway/domain/subscription"
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
+// ChangeCardByTokenizingCommand moves Subscription ID onto a brand-new card.
+type ChangeCardByTokenizingCommand struct {
+	ID int64
+	subscription.ChangeCardInput
+}
+
+// ChangeCardByTokenizingHandler starts a Tokenization for the Subscription's new card.
+// Redirect the customer to FollowUpLink.
+type ChangeCardByTokenizingHandler struct{ api ports.SubscriptionAPI }
+
+func NewChangeCardByTokenizingHandler(api ports.SubscriptionAPI) *ChangeCardByTokenizingHandler {
+	return &ChangeCardByTokenizingHandler{api: api}
+}
+
+func (h *ChangeCardByTokenizingHandler) Handle(ctx context.Context, cmd ChangeCardByTokenizingCommand) (*card.Tokenization, error) {
+	if err := cmd.Validate(); err != nil {
+		return nil, err
+	}
+	return h.api.ChangeCardByTokenizing(ctx, cmd.ID, cmd.ChangeCardInput)
+}
+```
+
+`gateway/application/commands/subscription/change_card.go`:
+```go
+package subscription
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/gateway/domain/subscription"
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
+// ChangeCardCommand moves Subscription ID onto an already stored Card Token.
+type ChangeCardCommand struct {
+	ID        int64
+	CardToken string
+}
+
+type ChangeCardHandler struct{ api ports.SubscriptionAPI }
+
+func NewChangeCardHandler(api ports.SubscriptionAPI) *ChangeCardHandler {
+	return &ChangeCardHandler{api: api}
+}
+
+func (h *ChangeCardHandler) Handle(ctx context.Context, cmd ChangeCardCommand) (*subscription.Subscription, error) {
+	return h.api.ChangeCard(ctx, cmd.ID, cmd.CardToken)
+}
+```
+
+`gateway/application/commands/subscription/unsubscribe.go`:
+```go
+package subscription
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
+// UnsubscribeCommand cancels Subscription ID; the already scheduled next billing still runs.
+type UnsubscribeCommand struct {
+	ID     int64
+	PlanID int64
+}
+
+type UnsubscribeHandler struct{ api ports.SubscriptionAPI }
+
+func NewUnsubscribeHandler(api ports.SubscriptionAPI) *UnsubscribeHandler {
+	return &UnsubscribeHandler{api: api}
+}
+
+func (h *UnsubscribeHandler) Handle(ctx context.Context, cmd UnsubscribeCommand) error {
+	return h.api.Unsubscribe(ctx, cmd.ID, cmd.PlanID)
+}
+```
+
+`gateway/application/commands/subscription/delete.go`:
+```go
+package subscription
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
+// DeleteCommand cancels Subscription ID immediately; no further billing is created.
+type DeleteCommand struct {
+	ID     int64
+	PlanID int64
+}
+
+type DeleteHandler struct{ api ports.SubscriptionAPI }
+
+func NewDeleteHandler(api ports.SubscriptionAPI) *DeleteHandler { return &DeleteHandler{api: api} }
+
+func (h *DeleteHandler) Handle(ctx context.Context, cmd DeleteCommand) error {
+	return h.api.DeleteSubscription(ctx, cmd.ID, cmd.PlanID)
+}
+```
+
+`gateway/application/queries/subscription/plans.go`:
+```go
+// Package subscription holds the Subscription aggregate's read use cases.
+package subscription
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/gateway/domain/subscription"
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
+// PlansHandler returns the Terminal's Payment Plans.
+type PlansHandler struct{ api ports.SubscriptionAPI }
+
+func NewPlansHandler(api ports.SubscriptionAPI) *PlansHandler { return &PlansHandler{api: api} }
+
+func (h *PlansHandler) Handle(ctx context.Context) ([]subscription.PaymentPlan, error) {
+	return h.api.Plans(ctx)
+}
+```
+
+`gateway/application/queries/subscription/list_subscriptions.go`:
+```go
+package subscription
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/gateway/domain/subscription"
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
+// ListSubscriptionsQuery returns the Subscriptions attached to CardToken.
+type ListSubscriptionsQuery struct{ CardToken string }
+
+type ListSubscriptionsHandler struct{ api ports.SubscriptionAPI }
+
+func NewListSubscriptionsHandler(api ports.SubscriptionAPI) *ListSubscriptionsHandler {
+	return &ListSubscriptionsHandler{api: api}
+}
+
+func (h *ListSubscriptionsHandler) Handle(ctx context.Context, q ListSubscriptionsQuery) ([]subscription.Subscription, error) {
+	return h.api.ListSubscriptions(ctx, q.CardToken)
+}
+```
+
+`gateway/application/commands/qr/create_qr.go`:
+```go
+// Package qr holds the QR Invoice aggregate's write use cases.
+package qr
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/gateway/domain/qr"
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
+// CreateQRCommand opens a QR Invoice.
+type CreateQRCommand = qr.CreateQRInput
+
+// CreateQRHandler opens a QR Invoice. Render QrImage or offer Links; the outcome arrives as
+// a PaymentEvent.
+type CreateQRHandler struct{ api ports.QRAPI }
+
+func NewCreateQRHandler(api ports.QRAPI) *CreateQRHandler { return &CreateQRHandler{api: api} }
+
+func (h *CreateQRHandler) Handle(ctx context.Context, cmd CreateQRCommand) (*qr.QRInvoice, error) {
+	if err := cmd.Validate(); err != nil {
+		return nil, err
+	}
+	return h.api.CreateQR(ctx, cmd)
+}
+```
+
+`gateway/application/commands/qr/pay_qr.go`:
+```go
+package qr
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/gateway/domain/card"
+	"github.com/techpartners-asia/bonum-go/gateway/domain/qr"
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
+// PayQRCommand settles a QR Invoice with a stored Card Token.
+type PayQRCommand struct {
+	CardToken string
+	qr.PayQRInput
+}
+
+type PayQRHandler struct{ api ports.QRAPI }
+
+func NewPayQRHandler(api ports.QRAPI) *PayQRHandler { return &PayQRHandler{api: api} }
+
+func (h *PayQRHandler) Handle(ctx context.Context, cmd PayQRCommand) (*card.Purchase, error) {
+	if err := cmd.Validate(); err != nil {
+		return nil, err
+	}
+	return h.api.PayQRWithCard(ctx, cmd.CardToken, cmd.PayQRInput)
+}
+```
+
+`gateway/application/queries/qr/lookup_qr.go`:
+```go
+// Package qr holds the QR Invoice aggregate's read use case.
+package qr
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/gateway/domain"
+	"github.com/techpartners-asia/bonum-go/gateway/domain/qr"
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
+// LookupQRQuery returns the QR Invoice behind a scanned QPay QR string.
+type LookupQRQuery struct{ QrCode string }
+
+type LookupQRHandler struct{ api ports.QRAPI }
+
+func NewLookupQRHandler(api ports.QRAPI) *LookupQRHandler { return &LookupQRHandler{api: api} }
+
+func (h *LookupQRHandler) Handle(ctx context.Context, q LookupQRQuery) (*qr.QRInvoice, error) {
+	if q.QrCode == "" {
+		return nil, domain.Invalid("qrCode", "required")
+	}
+	return h.api.LookupQR(ctx, q.QrCode)
+}
+```
+
+`gateway/application/commands/sandbox/mark_invoice_paid.go`:
+```go
+// Package sandbox holds the Sandbox aggregate's write use cases: helpers Bonum only permits
+// outside production.
+package sandbox
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
+// MarkInvoicePaidCommand marks InvoiceID as paid so the webhook fires.
+type MarkInvoicePaidCommand struct{ InvoiceID string }
+
+type MarkInvoicePaidHandler struct{ api ports.SandboxAPI }
+
+func NewMarkInvoicePaidHandler(api ports.SandboxAPI) *MarkInvoicePaidHandler {
+	return &MarkInvoicePaidHandler{api: api}
+}
+
+func (h *MarkInvoicePaidHandler) Handle(ctx context.Context, cmd MarkInvoicePaidCommand) error {
+	return h.api.MarkInvoicePaid(ctx, cmd.InvoiceID)
+}
+```
+
+`gateway/application/commands/sandbox/run_subscription_billing.go`:
+```go
+package sandbox
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
+// RunSubscriptionBillingCommand triggers a billing run for Subscription ID on demand.
+type RunSubscriptionBillingCommand struct{ ID int64 }
+
+type RunSubscriptionBillingHandler struct{ api ports.SandboxAPI }
+
+func NewRunSubscriptionBillingHandler(api ports.SandboxAPI) *RunSubscriptionBillingHandler {
+	return &RunSubscriptionBillingHandler{api: api}
+}
+
+func (h *RunSubscriptionBillingHandler) Handle(ctx context.Context, cmd RunSubscriptionBillingCommand) error {
+	return h.api.RunSubscriptionBilling(ctx, cmd.ID)
+}
+```
+
+`gateway/application/queries/sandbox/invoice_status.go`:
+```go
+// Package sandbox holds the Sandbox aggregate's read use case.
+package sandbox
+
+import (
+	"context"
+	"encoding/json"
+
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
+// InvoiceStatusQuery returns the raw invoice record. Bonum forbids polling in production:
+// rely on your own invoice table plus the webhook instead.
+type InvoiceStatusQuery struct{ InvoiceID string }
+
+type InvoiceStatusHandler struct{ api ports.SandboxAPI }
+
+func NewInvoiceStatusHandler(api ports.SandboxAPI) *InvoiceStatusHandler {
+	return &InvoiceStatusHandler{api: api}
+}
+
+func (h *InvoiceStatusHandler) Handle(ctx context.Context, q InvoiceStatusQuery) (json.RawMessage, error) {
+	return h.api.InvoiceStatus(ctx, q.InvoiceID)
+}
+```
+
+`gateway/application/access.go`:
+```go
+// Package application holds the Gateway facades: one struct per aggregate exposing the same
+// public methods as before, each delegating to a Command/Query Handler in
+// application/commands/<aggregate> or application/queries/<aggregate>. This is the CQRS-lite
+// split: one Handler per use case, kept behind a facade so callers (ultimately the bonum
+// package) see one object per aggregate rather than one per use case.
+package application
+
+import (
+	"context"
+
+	accesscmd "github.com/techpartners-asia/bonum-go/gateway/application/commands/access"
+	"github.com/techpartners-asia/bonum-go/gateway/domain/access"
+	"github.com/techpartners-asia/bonum-go/gateway/ports"
+)
+
 // Access forces token creation or refresh. Normally unnecessary: every call obtains a token
 // on demand inside the adapter.
-type Access struct{ api ports.AccessAPI }
+type Access struct {
+	authenticate *accesscmd.AuthenticateHandler
+	refresh      *accesscmd.RefreshHandler
+}
 
-func NewAccess(api ports.AccessAPI) *Access { return &Access{api: api} }
+func NewAccess(api ports.AccessAPI) *Access {
+	return &Access{
+		authenticate: accesscmd.NewAuthenticateHandler(api),
+		refresh:      accesscmd.NewRefreshHandler(api),
+	}
+}
 
 // Authenticate forces a fresh TokenPair via auth/create. The endpoint is rate limited.
 func (s *Access) Authenticate(ctx context.Context) (*access.TokenPair, error) {
-	return s.api.CreateToken(ctx)
+	return s.authenticate.Handle(ctx)
 }
 
 // Refresh exchanges the cached refresh token for a new access token via auth/refresh.
 func (s *Access) Refresh(ctx context.Context) (*access.TokenPair, error) {
-	return s.api.RefreshToken(ctx)
+	return s.refresh.Handle(ctx)
 }
 ```
 
@@ -1247,26 +1812,33 @@ package application
 import (
 	"context"
 
+	checkoutcmd "github.com/techpartners-asia/bonum-go/gateway/application/commands/checkout"
+	checkoutqry "github.com/techpartners-asia/bonum-go/gateway/application/queries/checkout"
 	"github.com/techpartners-asia/bonum-go/gateway/domain/checkout"
 	"github.com/techpartners-asia/bonum-go/gateway/ports"
 )
 
 // Invoices is the Invoice aggregate's use cases: hosted checkout.
-type Invoices struct{ api ports.CheckoutAPI }
+type Invoices struct {
+	providers *checkoutqry.ProvidersHandler
+	create    *checkoutcmd.CreateInvoiceHandler
+}
 
-func NewInvoices(api ports.CheckoutAPI) *Invoices { return &Invoices{api: api} }
+func NewInvoices(api ports.CheckoutAPI) *Invoices {
+	return &Invoices{
+		providers: checkoutqry.NewProvidersHandler(api),
+		create:    checkoutcmd.NewCreateInvoiceHandler(api),
+	}
+}
 
 // Providers lists the payment options currently enabled for this Terminal.
 func (s *Invoices) Providers(ctx context.Context) ([]checkout.PaymentProviderStatus, error) {
-	return s.api.Providers(ctx)
+	return s.providers.Handle(ctx)
 }
 
 // Create opens an Invoice. Redirect the customer to FollowUpLink.
 func (s *Invoices) Create(ctx context.Context, in checkout.CreateInvoiceInput) (*checkout.Invoice, error) {
-	if err := in.Validate(); err != nil {
-		return nil, err
-	}
-	return s.api.CreateInvoice(ctx, in)
+	return s.create.Handle(ctx, in)
 }
 ```
 
@@ -1277,35 +1849,40 @@ package application
 import (
 	"context"
 
+	cardcmd "github.com/techpartners-asia/bonum-go/gateway/application/commands/card"
 	"github.com/techpartners-asia/bonum-go/gateway/domain/card"
 	"github.com/techpartners-asia/bonum-go/gateway/ports"
 )
 
 // Cards is the Card Token aggregate's use cases: tokenization and charges against stored cards.
-type Cards struct{ api ports.CardAPI }
+type Cards struct {
+	tokenize *cardcmd.TokenizeHandler
+	purchase *cardcmd.PurchaseHandler
+	reverse  *cardcmd.ReverseHandler
+}
 
-func NewCards(api ports.CardAPI) *Cards { return &Cards{api: api} }
+func NewCards(api ports.CardAPI) *Cards {
+	return &Cards{
+		tokenize: cardcmd.NewTokenizeHandler(api),
+		purchase: cardcmd.NewPurchaseHandler(api),
+		reverse:  cardcmd.NewReverseHandler(api),
+	}
+}
 
 // Tokenize starts a card tokenization flow. Redirect the customer to FollowUpLink.
 func (s *Cards) Tokenize(ctx context.Context, in card.TokenizeInput) (*card.Tokenization, error) {
-	if err := in.Validate(); err != nil {
-		return nil, err
-	}
-	return s.api.Tokenize(ctx, in)
+	return s.tokenize.Handle(ctx, in)
 }
 
 // Purchase charges a Card Token. Under load Bonum may answer with Status QUEUED; the final
 // result then arrives as a TokenPaymentEvent. A bank refusal is returned as *card.DeclinedError.
 func (s *Cards) Purchase(ctx context.Context, cardToken string, in card.PurchaseInput) (*card.Purchase, error) {
-	if err := in.Validate(); err != nil {
-		return nil, err
-	}
-	return s.api.Purchase(ctx, cardToken, in)
+	return s.purchase.Handle(ctx, cardcmd.PurchaseCommand{CardToken: cardToken, PurchaseInput: in})
 }
 
 // Reverse rolls back a Purchase identified by the merchant TransactionID.
 func (s *Cards) Reverse(ctx context.Context, cardToken, transactionID string) error {
-	return s.api.Reverse(ctx, cardToken, transactionID)
+	return s.reverse.Handle(ctx, cardcmd.ReverseCommand{CardToken: cardToken, TransactionID: transactionID})
 }
 ```
 
@@ -1316,57 +1893,71 @@ package application
 import (
 	"context"
 
+	subscriptioncmd "github.com/techpartners-asia/bonum-go/gateway/application/commands/subscription"
+	subscriptionqry "github.com/techpartners-asia/bonum-go/gateway/application/queries/subscription"
 	"github.com/techpartners-asia/bonum-go/gateway/domain/card"
 	"github.com/techpartners-asia/bonum-go/gateway/domain/subscription"
 	"github.com/techpartners-asia/bonum-go/gateway/ports"
 )
 
 // Subscriptions is the Subscription aggregate's use cases: recurring charges on a Card Token.
-type Subscriptions struct{ api ports.SubscriptionAPI }
+type Subscriptions struct {
+	plans                  *subscriptionqry.PlansHandler
+	subscribe              *subscriptioncmd.SubscribeHandler
+	list                   *subscriptionqry.ListSubscriptionsHandler
+	changeCardByTokenizing *subscriptioncmd.ChangeCardByTokenizingHandler
+	changeCard             *subscriptioncmd.ChangeCardHandler
+	unsubscribe            *subscriptioncmd.UnsubscribeHandler
+	delete                 *subscriptioncmd.DeleteHandler
+}
 
-func NewSubscriptions(api ports.SubscriptionAPI) *Subscriptions { return &Subscriptions{api: api} }
+func NewSubscriptions(api ports.SubscriptionAPI) *Subscriptions {
+	return &Subscriptions{
+		plans:                  subscriptionqry.NewPlansHandler(api),
+		subscribe:              subscriptioncmd.NewSubscribeHandler(api),
+		list:                   subscriptionqry.NewListSubscriptionsHandler(api),
+		changeCardByTokenizing: subscriptioncmd.NewChangeCardByTokenizingHandler(api),
+		changeCard:             subscriptioncmd.NewChangeCardHandler(api),
+		unsubscribe:            subscriptioncmd.NewUnsubscribeHandler(api),
+		delete:                 subscriptioncmd.NewDeleteHandler(api),
+	}
+}
 
 // Plans returns the Terminal's Payment Plans.
 func (s *Subscriptions) Plans(ctx context.Context) ([]subscription.PaymentPlan, error) {
-	return s.api.Plans(ctx)
+	return s.plans.Handle(ctx)
 }
 
 // Subscribe enrols a Card Token in a Payment Plan. If today matches CycleValue (or PayNow
 // is set) the first charge happens immediately.
 func (s *Subscriptions) Subscribe(ctx context.Context, cardToken string, in subscription.SubscribeInput) (*subscription.Subscription, error) {
-	if err := in.Validate(); err != nil {
-		return nil, err
-	}
-	return s.api.Subscribe(ctx, cardToken, in)
+	return s.subscribe.Handle(ctx, subscriptioncmd.SubscribeCommand{CardToken: cardToken, SubscribeInput: in})
 }
 
 // List returns the Subscriptions attached to a Card Token.
 func (s *Subscriptions) List(ctx context.Context, cardToken string) ([]subscription.Subscription, error) {
-	return s.api.ListSubscriptions(ctx, cardToken)
+	return s.list.Handle(ctx, subscriptionqry.ListSubscriptionsQuery{CardToken: cardToken})
 }
 
 // ChangeCardByTokenizing moves a Subscription onto a brand-new card by starting a
 // Tokenization. Redirect the customer to FollowUpLink.
 func (s *Subscriptions) ChangeCardByTokenizing(ctx context.Context, id int64, in subscription.ChangeCardInput) (*card.Tokenization, error) {
-	if err := in.Validate(); err != nil {
-		return nil, err
-	}
-	return s.api.ChangeCardByTokenizing(ctx, id, in)
+	return s.changeCardByTokenizing.Handle(ctx, subscriptioncmd.ChangeCardByTokenizingCommand{ID: id, ChangeCardInput: in})
 }
 
 // ChangeCard moves a Subscription onto an already stored Card Token.
 func (s *Subscriptions) ChangeCard(ctx context.Context, id int64, cardToken string) (*subscription.Subscription, error) {
-	return s.api.ChangeCard(ctx, id, cardToken)
+	return s.changeCard.Handle(ctx, subscriptioncmd.ChangeCardCommand{ID: id, CardToken: cardToken})
 }
 
 // Unsubscribe cancels a Subscription; the already scheduled next billing still runs.
 func (s *Subscriptions) Unsubscribe(ctx context.Context, id, planID int64) error {
-	return s.api.Unsubscribe(ctx, id, planID)
+	return s.unsubscribe.Handle(ctx, subscriptioncmd.UnsubscribeCommand{ID: id, PlanID: planID})
 }
 
 // Delete cancels a Subscription immediately; no further billing is created.
 func (s *Subscriptions) Delete(ctx context.Context, id, planID int64) error {
-	return s.api.DeleteSubscription(ctx, id, planID)
+	return s.delete.Handle(ctx, subscriptioncmd.DeleteCommand{ID: id, PlanID: planID})
 }
 ```
 
@@ -1377,39 +1968,41 @@ package application
 import (
 	"context"
 
-	"github.com/techpartners-asia/bonum-go/gateway/domain"
+	qrcmd "github.com/techpartners-asia/bonum-go/gateway/application/commands/qr"
+	qrqry "github.com/techpartners-asia/bonum-go/gateway/application/queries/qr"
 	"github.com/techpartners-asia/bonum-go/gateway/domain/card"
 	"github.com/techpartners-asia/bonum-go/gateway/domain/qr"
 	"github.com/techpartners-asia/bonum-go/gateway/ports"
 )
 
 // QR is the QR Invoice aggregate's use cases: QPay-compatible QR and deeplink payments.
-type QR struct{ api ports.QRAPI }
+type QR struct {
+	create      *qrcmd.CreateQRHandler
+	lookup      *qrqry.LookupQRHandler
+	payWithCard *qrcmd.PayQRHandler
+}
 
-func NewQR(api ports.QRAPI) *QR { return &QR{api: api} }
+func NewQR(api ports.QRAPI) *QR {
+	return &QR{
+		create:      qrcmd.NewCreateQRHandler(api),
+		lookup:      qrqry.NewLookupQRHandler(api),
+		payWithCard: qrcmd.NewPayQRHandler(api),
+	}
+}
 
 // Create opens a QR Invoice. Render QrImage or offer Links; the outcome arrives as a PaymentEvent.
 func (s *QR) Create(ctx context.Context, in qr.CreateQRInput) (*qr.QRInvoice, error) {
-	if err := in.Validate(); err != nil {
-		return nil, err
-	}
-	return s.api.CreateQR(ctx, in)
+	return s.create.Handle(ctx, in)
 }
 
 // Lookup returns the QR Invoice behind a scanned QPay QR string.
 func (s *QR) Lookup(ctx context.Context, qrCode string) (*qr.QRInvoice, error) {
-	if qrCode == "" {
-		return nil, domain.Invalid("qrCode", "required")
-	}
-	return s.api.LookupQR(ctx, qrCode)
+	return s.lookup.Handle(ctx, qrqry.LookupQRQuery{QrCode: qrCode})
 }
 
 // PayWithCard settles a QR Invoice with a stored Card Token.
 func (s *QR) PayWithCard(ctx context.Context, cardToken string, in qr.PayQRInput) (*card.Purchase, error) {
-	if err := in.Validate(); err != nil {
-		return nil, err
-	}
-	return s.api.PayQRWithCard(ctx, cardToken, in)
+	return s.payWithCard.Handle(ctx, qrcmd.PayQRCommand{CardToken: cardToken, PayQRInput: in})
 }
 ```
 
@@ -1421,29 +2014,41 @@ import (
 	"context"
 	"encoding/json"
 
+	sandboxcmd "github.com/techpartners-asia/bonum-go/gateway/application/commands/sandbox"
+	sandboxqry "github.com/techpartners-asia/bonum-go/gateway/application/queries/sandbox"
 	"github.com/techpartners-asia/bonum-go/gateway/ports"
 )
 
 // Sandbox groups helpers Bonum only permits outside production. Keeping them off the
 // aggregate services stops them leaking into production code paths.
-type Sandbox struct{ api ports.SandboxAPI }
+type Sandbox struct {
+	invoiceStatus          *sandboxqry.InvoiceStatusHandler
+	markInvoicePaid        *sandboxcmd.MarkInvoicePaidHandler
+	runSubscriptionBilling *sandboxcmd.RunSubscriptionBillingHandler
+}
 
-func NewSandbox(api ports.SandboxAPI) *Sandbox { return &Sandbox{api: api} }
+func NewSandbox(api ports.SandboxAPI) *Sandbox {
+	return &Sandbox{
+		invoiceStatus:          sandboxqry.NewInvoiceStatusHandler(api),
+		markInvoicePaid:        sandboxcmd.NewMarkInvoicePaidHandler(api),
+		runSubscriptionBilling: sandboxcmd.NewRunSubscriptionBillingHandler(api),
+	}
+}
 
 // InvoiceStatus returns the raw invoice record. Bonum forbids polling in production:
 // rely on your own invoice table plus the webhook instead.
 func (s *Sandbox) InvoiceStatus(ctx context.Context, invoiceID string) (json.RawMessage, error) {
-	return s.api.InvoiceStatus(ctx, invoiceID)
+	return s.invoiceStatus.Handle(ctx, sandboxqry.InvoiceStatusQuery{InvoiceID: invoiceID})
 }
 
 // MarkInvoicePaid marks an Invoice as paid so the webhook fires.
 func (s *Sandbox) MarkInvoicePaid(ctx context.Context, invoiceID string) error {
-	return s.api.MarkInvoicePaid(ctx, invoiceID)
+	return s.markInvoicePaid.Handle(ctx, sandboxcmd.MarkInvoicePaidCommand{InvoiceID: invoiceID})
 }
 
 // RunSubscriptionBilling triggers a billing run for a Subscription on demand.
 func (s *Sandbox) RunSubscriptionBilling(ctx context.Context, id int64) error {
-	return s.api.RunSubscriptionBilling(ctx, id)
+	return s.runSubscriptionBilling.Handle(ctx, sandboxcmd.RunSubscriptionBillingCommand{ID: id})
 }
 ```
 
@@ -2579,12 +3184,17 @@ git commit -m "Add wallet domain: payment and webhook aggregates"
 ### Task 8: Wallet ports and application
 
 **Files:**
-- Create: `wallet/ports/ports.go`, `wallet/application/payments.go`
+- Create: `wallet/ports/ports.go`
+- Create (commands): `wallet/application/commands/payment/process_apple_pay.go`, `wallet/application/commands/payment/process_google_pay.go`
+- Create (queries): `wallet/application/queries/payment/get_payment.go`, `wallet/application/queries/payment/lookup_by_order_id.go`, `wallet/application/queries/payment/await_payment.go`, `wallet/application/queries/payment/await_url.go`
+- Create (facade, unchanged public shape): `wallet/application/payments.go`
 - Test: `tests/wallet/application/payments_test.go`
+
+**CQRS-lite:** same split as Task 4 — `ProcessApplePay`/`ProcessGooglePay` are Commands (they submit a token and change state at Bonum); `GetPayment`/`LookupByOrderID`/`AwaitPayment`/`AwaitURL` are Queries (all four only read a Wallet Payment's current status, `Await*` just does it with a blocking wait). `AwaitPaymentQuery`/`AwaitURLQuery` carry the un-clamped `Timeout`; `clampAwait` (the same domain rule from the original plan) moves into `wallet/application/queries/payment` and is defined once, used by both. The `payment` package name repeats across `wallet/domain/payment`, `wallet/application/commands/payment` and `wallet/application/queries/payment` — in `payments.go`, which imports all three, alias the two application-layer imports as `paymentcmd` / `paymentqry` and leave the domain import unaliased.
 
 **Interfaces:**
 - Consumes: Task 7 domain.
-- Produces: `ports.PaymentAPI` as in the spec; `application.NewPayments(ports.PaymentAPI) *Payments` with `ProcessApplePay/ProcessGooglePay/GetPayment/LookupByOrderID/AwaitPayment/AwaitURL`.
+- Produces: `ports.PaymentAPI` as in the spec (unchanged); `application.NewPayments(ports.PaymentAPI) *Payments` with `ProcessApplePay/ProcessGooglePay/GetPayment/LookupByOrderID/AwaitPayment/AwaitURL`, each now delegating to a `*Handler` in `commands/payment` or `queries/payment`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2754,11 +3364,130 @@ type PaymentAPI interface {
 }
 ```
 
-`wallet/application/payments.go`:
+`wallet/application/commands/payment/process_apple_pay.go`:
 ```go
-// Package application holds the Wallet use cases. Each method validates against the domain,
-// applies the await cap, calls the port and returns.
-package application
+// Package payment holds the Wallet Payment aggregate's write use cases: submitting a wallet
+// token.
+package payment
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/wallet/domain/payment"
+	"github.com/techpartners-asia/bonum-go/wallet/ports"
+)
+
+// ProcessApplePayCommand submits an Apple Pay token.
+type ProcessApplePayCommand = payment.ProcessApplePayInput
+
+// ProcessApplePayHandler submits an Apple Pay token. The response is always PENDING; call
+// AwaitPayment (or AwaitURL) to learn the outcome in time to close the wallet sheet.
+type ProcessApplePayHandler struct{ api ports.PaymentAPI }
+
+func NewProcessApplePayHandler(api ports.PaymentAPI) *ProcessApplePayHandler {
+	return &ProcessApplePayHandler{api: api}
+}
+
+func (h *ProcessApplePayHandler) Handle(ctx context.Context, cmd ProcessApplePayCommand) (*payment.ProcessResponse, error) {
+	if err := cmd.Validate(); err != nil {
+		return nil, err
+	}
+	return h.api.ProcessApplePay(ctx, cmd)
+}
+```
+
+`wallet/application/commands/payment/process_google_pay.go`:
+```go
+package payment
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/wallet/domain/payment"
+	"github.com/techpartners-asia/bonum-go/wallet/ports"
+)
+
+// ProcessGooglePayCommand submits a Google Pay token string.
+type ProcessGooglePayCommand = payment.ProcessGooglePayInput
+
+// ProcessGooglePayHandler submits a Google Pay token string. See ProcessApplePayHandler for
+// the result model.
+type ProcessGooglePayHandler struct{ api ports.PaymentAPI }
+
+func NewProcessGooglePayHandler(api ports.PaymentAPI) *ProcessGooglePayHandler {
+	return &ProcessGooglePayHandler{api: api}
+}
+
+func (h *ProcessGooglePayHandler) Handle(ctx context.Context, cmd ProcessGooglePayCommand) (*payment.ProcessResponse, error) {
+	if err := cmd.Validate(); err != nil {
+		return nil, err
+	}
+	return h.api.ProcessGooglePay(ctx, cmd)
+}
+```
+
+`wallet/application/queries/payment/get_payment.go`:
+```go
+// Package payment holds the Wallet Payment aggregate's read use cases.
+package payment
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/wallet/domain"
+	"github.com/techpartners-asia/bonum-go/wallet/domain/payment"
+	"github.com/techpartners-asia/bonum-go/wallet/ports"
+)
+
+// GetPaymentQuery returns the current state of a Wallet Payment by Bonum's paymentId.
+type GetPaymentQuery struct{ PaymentID string }
+
+type GetPaymentHandler struct{ api ports.PaymentAPI }
+
+func NewGetPaymentHandler(api ports.PaymentAPI) *GetPaymentHandler {
+	return &GetPaymentHandler{api: api}
+}
+
+func (h *GetPaymentHandler) Handle(ctx context.Context, q GetPaymentQuery) (*payment.Payment, error) {
+	if q.PaymentID == "" {
+		return nil, domain.Invalid("paymentID", "required")
+	}
+	return h.api.GetPayment(ctx, q.PaymentID)
+}
+```
+
+`wallet/application/queries/payment/lookup_by_order_id.go`:
+```go
+package payment
+
+import (
+	"context"
+
+	"github.com/techpartners-asia/bonum-go/wallet/domain"
+	"github.com/techpartners-asia/bonum-go/wallet/domain/payment"
+	"github.com/techpartners-asia/bonum-go/wallet/ports"
+)
+
+// LookupByOrderIDQuery returns the Wallet Payment submitted with your Order ID.
+type LookupByOrderIDQuery struct{ OrderID string }
+
+type LookupByOrderIDHandler struct{ api ports.PaymentAPI }
+
+func NewLookupByOrderIDHandler(api ports.PaymentAPI) *LookupByOrderIDHandler {
+	return &LookupByOrderIDHandler{api: api}
+}
+
+func (h *LookupByOrderIDHandler) Handle(ctx context.Context, q LookupByOrderIDQuery) (*payment.Payment, error) {
+	if q.OrderID == "" {
+		return nil, domain.Invalid("orderID", "required")
+	}
+	return h.api.LookupByOrderID(ctx, q.OrderID)
+}
+```
+
+`wallet/application/queries/payment/await_payment.go`:
+```go
+package payment
 
 import (
 	"context"
@@ -2769,63 +3498,29 @@ import (
 	"github.com/techpartners-asia/bonum-go/wallet/ports"
 )
 
-// Payments is the Wallet Payment aggregate's use cases.
-type Payments struct{ api ports.PaymentAPI }
-
-func NewPayments(api ports.PaymentAPI) *Payments { return &Payments{api: api} }
-
-// ProcessApplePay submits an Apple Pay token. The response is always PENDING; call
-// AwaitPayment (or AwaitURL) to learn the outcome in time to close the wallet sheet.
-func (s *Payments) ProcessApplePay(ctx context.Context, in payment.ProcessApplePayInput) (*payment.ProcessResponse, error) {
-	if err := in.Validate(); err != nil {
-		return nil, err
-	}
-	return s.api.ProcessApplePay(ctx, in)
+// AwaitPaymentQuery blocks until the payment reaches AUTHORIZED or FAILED, or Timeout
+// elapses. Timeout 0 uses Bonum's default (25s); anything above payment.MaxAwaitTimeout is
+// capped at 28s.
+type AwaitPaymentQuery struct {
+	PaymentID string
+	Timeout   time.Duration
 }
 
-// ProcessGooglePay submits a Google Pay token string. See ProcessApplePay for the result model.
-func (s *Payments) ProcessGooglePay(ctx context.Context, in payment.ProcessGooglePayInput) (*payment.ProcessResponse, error) {
-	if err := in.Validate(); err != nil {
-		return nil, err
-	}
-	return s.api.ProcessGooglePay(ctx, in)
+type AwaitPaymentHandler struct{ api ports.PaymentAPI }
+
+func NewAwaitPaymentHandler(api ports.PaymentAPI) *AwaitPaymentHandler {
+	return &AwaitPaymentHandler{api: api}
 }
 
-// GetPayment returns the current state of a Wallet Payment by Bonum's paymentId.
-func (s *Payments) GetPayment(ctx context.Context, paymentID string) (*payment.Payment, error) {
-	if paymentID == "" {
+func (h *AwaitPaymentHandler) Handle(ctx context.Context, q AwaitPaymentQuery) (*payment.AwaitResult, error) {
+	if q.PaymentID == "" {
 		return nil, domain.Invalid("paymentID", "required")
 	}
-	return s.api.GetPayment(ctx, paymentID)
-}
-
-// LookupByOrderID returns the Wallet Payment submitted with your Order ID.
-func (s *Payments) LookupByOrderID(ctx context.Context, orderID string) (*payment.Payment, error) {
-	if orderID == "" {
-		return nil, domain.Invalid("orderID", "required")
-	}
-	return s.api.LookupByOrderID(ctx, orderID)
-}
-
-// AwaitPayment blocks until the payment reaches AUTHORIZED or FAILED, or timeout elapses.
-// timeout 0 uses Bonum's default (25s); anything above MaxAwaitTimeout is capped at 28s.
-// On TimedOut the payment is still processing and the outcome arrives via the webhook.
-func (s *Payments) AwaitPayment(ctx context.Context, paymentID string, timeout time.Duration) (*payment.AwaitResult, error) {
-	if paymentID == "" {
-		return nil, domain.Invalid("paymentID", "required")
-	}
-	return s.api.AwaitPayment(ctx, paymentID, clampAwait(timeout))
-}
-
-// AwaitURL is AwaitPayment for the absolute awaitUrl returned by ProcessApplePay / ProcessGooglePay.
-func (s *Payments) AwaitURL(ctx context.Context, awaitURL string, timeout time.Duration) (*payment.AwaitResult, error) {
-	if awaitURL == "" {
-		return nil, domain.Invalid("awaitURL", "required")
-	}
-	return s.api.AwaitURL(ctx, awaitURL, clampAwait(timeout))
+	return h.api.AwaitPayment(ctx, q.PaymentID, clampAwait(q.Timeout))
 }
 
 // clampAwait applies the domain rule: non-positive means server default, never above the cap.
+// Defined once here; await_url.go in this same package reuses it.
 func clampAwait(d time.Duration) time.Duration {
 	switch {
 	case d <= 0:
@@ -2834,6 +3529,110 @@ func clampAwait(d time.Duration) time.Duration {
 		return payment.MaxAwaitTimeout
 	}
 	return d
+}
+```
+
+`wallet/application/queries/payment/await_url.go`:
+```go
+package payment
+
+import (
+	"context"
+	"time"
+
+	"github.com/techpartners-asia/bonum-go/wallet/domain"
+	"github.com/techpartners-asia/bonum-go/wallet/domain/payment"
+	"github.com/techpartners-asia/bonum-go/wallet/ports"
+)
+
+// AwaitURLQuery is AwaitPaymentQuery for the absolute awaitUrl returned by
+// ProcessApplePay / ProcessGooglePay.
+type AwaitURLQuery struct {
+	AwaitURL string
+	Timeout  time.Duration
+}
+
+type AwaitURLHandler struct{ api ports.PaymentAPI }
+
+func NewAwaitURLHandler(api ports.PaymentAPI) *AwaitURLHandler { return &AwaitURLHandler{api: api} }
+
+func (h *AwaitURLHandler) Handle(ctx context.Context, q AwaitURLQuery) (*payment.AwaitResult, error) {
+	if q.AwaitURL == "" {
+		return nil, domain.Invalid("awaitURL", "required")
+	}
+	return h.api.AwaitURL(ctx, q.AwaitURL, clampAwait(q.Timeout))
+}
+```
+
+`wallet/application/payments.go`:
+```go
+// Package application holds the Wallet facade: one struct exposing the same public methods
+// as before, delegating to Command/Query Handlers in application/commands/payment and
+// application/queries/payment.
+package application
+
+import (
+	"context"
+	"time"
+
+	paymentcmd "github.com/techpartners-asia/bonum-go/wallet/application/commands/payment"
+	paymentqry "github.com/techpartners-asia/bonum-go/wallet/application/queries/payment"
+	"github.com/techpartners-asia/bonum-go/wallet/domain/payment"
+	"github.com/techpartners-asia/bonum-go/wallet/ports"
+)
+
+// Payments is the Wallet Payment aggregate's use cases.
+type Payments struct {
+	processApplePay  *paymentcmd.ProcessApplePayHandler
+	processGooglePay *paymentcmd.ProcessGooglePayHandler
+	getPayment       *paymentqry.GetPaymentHandler
+	lookupByOrderID  *paymentqry.LookupByOrderIDHandler
+	awaitPayment     *paymentqry.AwaitPaymentHandler
+	awaitURL         *paymentqry.AwaitURLHandler
+}
+
+func NewPayments(api ports.PaymentAPI) *Payments {
+	return &Payments{
+		processApplePay:  paymentcmd.NewProcessApplePayHandler(api),
+		processGooglePay: paymentcmd.NewProcessGooglePayHandler(api),
+		getPayment:       paymentqry.NewGetPaymentHandler(api),
+		lookupByOrderID:  paymentqry.NewLookupByOrderIDHandler(api),
+		awaitPayment:     paymentqry.NewAwaitPaymentHandler(api),
+		awaitURL:         paymentqry.NewAwaitURLHandler(api),
+	}
+}
+
+// ProcessApplePay submits an Apple Pay token. The response is always PENDING; call
+// AwaitPayment (or AwaitURL) to learn the outcome in time to close the wallet sheet.
+func (s *Payments) ProcessApplePay(ctx context.Context, in payment.ProcessApplePayInput) (*payment.ProcessResponse, error) {
+	return s.processApplePay.Handle(ctx, in)
+}
+
+// ProcessGooglePay submits a Google Pay token string. See ProcessApplePay for the result model.
+func (s *Payments) ProcessGooglePay(ctx context.Context, in payment.ProcessGooglePayInput) (*payment.ProcessResponse, error) {
+	return s.processGooglePay.Handle(ctx, in)
+}
+
+// GetPayment returns the current state of a Wallet Payment by Bonum's paymentId.
+func (s *Payments) GetPayment(ctx context.Context, paymentID string) (*payment.Payment, error) {
+	return s.getPayment.Handle(ctx, paymentqry.GetPaymentQuery{PaymentID: paymentID})
+}
+
+// LookupByOrderID returns the Wallet Payment submitted with your Order ID.
+func (s *Payments) LookupByOrderID(ctx context.Context, orderID string) (*payment.Payment, error) {
+	return s.lookupByOrderID.Handle(ctx, paymentqry.LookupByOrderIDQuery{OrderID: orderID})
+}
+
+// AwaitPayment blocks until the payment reaches AUTHORIZED or FAILED, or timeout elapses.
+// timeout 0 uses Bonum's default (25s); anything above MaxAwaitTimeout is capped at 28s.
+// On TimedOut the payment is still processing and the outcome arrives via the webhook.
+func (s *Payments) AwaitPayment(ctx context.Context, paymentID string, timeout time.Duration) (*payment.AwaitResult, error) {
+	return s.awaitPayment.Handle(ctx, paymentqry.AwaitPaymentQuery{PaymentID: paymentID, Timeout: timeout})
+}
+
+// AwaitURL is AwaitPayment for the absolute awaitUrl returned by ProcessApplePay / ProcessGooglePay.
+func (s *Payments) AwaitURL(ctx context.Context, awaitURL string, timeout time.Duration) (*payment.AwaitResult, error) {
+	return s.awaitURL.Handle(ctx, paymentqry.AwaitURLQuery{AwaitURL: awaitURL, Timeout: timeout})
 }
 ```
 
@@ -3273,13 +4072,17 @@ func allowed(ctx, layer, imp string) bool {
 	}
 	domain := strings.HasPrefix(rel, ctx+"/domain")
 	ports := rel == ctx+"/ports"
+	application := strings.HasPrefix(rel, ctx+"/application/")
 	switch layer {
 	case "domain":
 		return domain
 	case "ports":
 		return domain
 	case "application":
-		return domain || ports
+		// application also covers its own commands/<aggregate> and queries/<aggregate>
+		// subpackages (CQRS-lite): a facade file imports those, and each of those
+		// imports only domain + ports, same as any other application-layer file.
+		return domain || ports || application
 	case "adapters":
 		return domain || ports || rel == "internal/rest"
 	case "facade":
@@ -3339,6 +4142,7 @@ func TestRuleCatchesViolations(t *testing.T) {
 		{"gateway", "ports", module + "/gateway/application"},
 		{"gateway", "adapters", module + "/wallet/domain"},
 		{"wallet", "facade", module + "/gateway/domain"},
+		{"gateway", "application", module + "/wallet/application/commands/payment"},
 	}
 	for _, b := range bad {
 		if allowed(b.ctx, b.layer, b.imp) {
@@ -3349,6 +4153,8 @@ func TestRuleCatchesViolations(t *testing.T) {
 		{"gateway", "domain", "encoding/json"},
 		{"gateway", "domain", module + "/gateway/domain/checkout"},
 		{"gateway", "application", module + "/gateway/ports"},
+		{"gateway", "application", module + "/gateway/application/commands/card"},
+		{"wallet", "application", module + "/wallet/application/queries/payment"},
 		{"gateway", "adapters", "resty.dev/v3"},
 		{"wallet", "facade", module + "/wallet/application"},
 	}
@@ -3411,17 +4217,25 @@ through HTTP. And nothing stopped transport details from leaking into types call
 
 Each context is now four packages with imports pointing inward: `domain/<aggregate>` holds
 the types, `Validate` methods and domain errors; `ports` holds the interfaces the use cases
-call; `application` holds one service per aggregate whose methods validate, call a port and
-return; `adapters/httpapi` implements every port with resty against Bonum's endpoints. The
-root `bonum` package and the `wallet` package are facades: they compose an adapter into the
-services and re-export the domain types as aliases, so the public API did not change and a
-merchant still imports one package. `tests/architecture` fails the build if an import goes
-the wrong way.
+call; `application` implements those use cases CQRS-lite, one Command or Query type plus a
+`*Handler` per use case under `application/commands/<aggregate>` or
+`application/queries/<aggregate>`, fronted by one facade struct per aggregate that keeps the
+pre-existing method names; `adapters/httpapi` implements every port with resty against
+Bonum's endpoints. The root `bonum` package and the `wallet` package are facades: they
+compose an adapter into the aggregate facades and re-export the domain types as aliases, so
+the public API did not change and a merchant still imports one package. `tests/architecture`
+fails the build if an import goes the wrong way.
 
-We deliberately left out the rest of the usual DDD toolkit. There are no per-use-case handler
-structs (a service method is the use case), no domain events (nothing consumes them), no
-repositories or unit of work (an SDK has no persistence), and no separate DTO layer (ADR
-0002). Each of those would be a seam with no consumer.
+The CQRS split was added after Tasks 1-3 (domain-only, unaffected) had already landed: the
+domain and ports layers do not care whether the application layer above them is one service
+per aggregate or one handler per use case, so widening the application layer's shape cost
+nothing outside `application/`.
+
+We deliberately left out the rest of the usual DDD toolkit. There is no generic
+command bus or mediator (the aggregate facade dispatches directly, so there is nothing a
+bus would decouple here), no domain events (nothing consumes them), no repositories or unit
+of work (an SDK has no persistence), and no separate DTO layer (ADR 0002). Each of those
+would be a seam with no consumer.
 ```
 
 - [ ] **Step 3: Amend ADR 0002 and ADR 0004**
@@ -3463,7 +4277,9 @@ gateway/CONTEXT.md     Gateway glossary
 gateway/domain/        errors shared by the context, then one package per aggregate:
                        access, checkout, card, subscription, qr, webhook
 gateway/ports/         interfaces the use cases call (one per aggregate)
-gateway/application/   one service per aggregate; validate -> port -> return
+gateway/application/   CQRS-lite: commands/<aggregate> and queries/<aggregate> hold one
+                       Command/Query + Handler per use case; one facade struct per
+                       aggregate in the package root keeps the old per-aggregate method names
 gateway/adapters/httpapi/
                        resty implementation of every port: token lifecycle, envelope,
                        error decoding, decline detection
@@ -3498,6 +4314,7 @@ git commit -m "Document the layered contexts: ADR 0005, amended ADRs, README lay
 
 ## Self-review
 
-- **Spec coverage:** Layout → Tasks 1–9, 11. Dependency rule → Task 10. Domain contracts (Validate, Invalid, DeclinedError, Parse/ParseAt, MaxAwaitTimeout, prefixes) → Tasks 1, 2, 3, 7. Ports → Tasks 4, 8. Application incl. await clamp and Access → Tasks 4, 8. Adapters incl. constructors and setters → Tasks 5, 9. Facades with aliases and error vars → Tasks 6, 9. Testing split → Tasks 1–4, 7, 8, 10. Docs → Task 11.
+- **Spec coverage:** Layout → Tasks 1–9, 11. Dependency rule → Task 10. Domain contracts (Validate, Invalid, DeclinedError, Parse/ParseAt, MaxAwaitTimeout, prefixes) → Tasks 1, 2, 3, 7. Ports → Tasks 4, 8. Application (CQRS-lite: Command/Query + Handler per use case, await clamp, Access) → Tasks 4, 8. Adapters incl. constructors and setters → Tasks 5, 9. Facades with aliases and error vars → Tasks 6, 9. Testing split → Tasks 1–4, 7, 8, 10. Docs → Task 11.
 - **Placeholders:** Tasks 3 and 7 say "copy the current file with these changes" for the large webhook/payment type blocks and list every change; the executor has the source file in the repo. No TBDs.
-- **Type consistency:** port method names in Task 4 tests, Task 4 ports, Task 5 adapter and the spec all match (`CreateToken/RefreshToken`, `Providers/CreateInvoice`, `Tokenize/Purchase/Reverse`, `Plans/Subscribe/ListSubscriptions/ChangeCardByTokenizing/ChangeCard/Unsubscribe/DeleteSubscription`, `CreateQR/LookupQR/PayQRWithCard`, `InvoiceStatus/MarkInvoicePaid/RunSubscriptionBilling`). Wallet: `ProcessApplePay/ProcessGooglePay/GetPayment/LookupByOrderID/AwaitPayment/AwaitURL` in Task 8 tests, ports, application and Task 9 adapter/facade. Application service method names equal the old facade method names, which is what keeps `tests/gateway` and `tests/wallet` unchanged.
+- **Type consistency:** port method names in Task 4 tests, Task 4 ports, Task 5 adapter and the spec all match (`CreateToken/RefreshToken`, `Providers/CreateInvoice`, `Tokenize/Purchase/Reverse`, `Plans/Subscribe/ListSubscriptions/ChangeCardByTokenizing/ChangeCard/Unsubscribe/DeleteSubscription`, `CreateQR/LookupQR/PayQRWithCard`, `InvoiceStatus/MarkInvoicePaid/RunSubscriptionBilling`). Wallet: `ProcessApplePay/ProcessGooglePay/GetPayment/LookupByOrderID/AwaitPayment/AwaitURL` in Task 8 tests, ports, application and Task 9 adapter/facade. The Task 4/8 facade structs (`Invoices`, `Cards`, `Subscriptions`, `QR`, `Sandbox`, `Access`, `Payments`) keep the exact old method names and `NewX(port) *X` constructor signatures, unchanged by the CQRS split inside them — that identity is what keeps `tests/gateway`, `tests/wallet`, and Tasks 6/9 (facade wiring) unchanged.
+- **Amendment (2026-09-14, mid-execution):** the user asked for CQRS after Tasks 1–3 were already implemented and reviewed on the `ddd-layers` branch by a concurrently running session. Tasks 4 and 8 (application layer) were rewritten in place to the CQRS-lite Command/Query-per-use-case shape described above; Task 10's `allowed()` gained one clause so `application/commands/**` and `application/queries/**` are recognised as the same "application" layer as their facade; Task 11's ADR 0005 draft and README layout paragraph were reworded to describe the split. Tasks 1, 2, 3, 5, 6, 7, 9 needed no change — ports, adapters, and facade public signatures are identical either way, which is why the change could land without touching or re-reviewing already-completed work.
