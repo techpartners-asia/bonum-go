@@ -1,15 +1,14 @@
-package bonum
+package wallet
 
-import "github.com/techpartners-asia/bonum-go/gateway/domain"
+import "github.com/techpartners-asia/bonum-go/wallet/domain"
 
 // Sentinel errors shared by every aggregate. Match them with errors.Is; the concrete
-// *APIError / *ValidationError is still available through errors.As. Aggregate-specific
-// errors (ErrDeclined in card.go, ErrBadChecksum / ErrUnknownEvent in webhook.go) live
-// alongside that aggregate's other types.
+// *APIError / *ValidationError is still available through errors.As. Webhook-specific
+// errors (ErrMissingSignature, ErrTimestampExpired, ErrSignatureMismatch) live in webhook.go.
 var (
 	ErrInvalidInput = domain.ErrInvalidInput // local validation failed, or Bonum answered 400
-	ErrUnauthorized = domain.ErrUnauthorized // 401 / 403: bad AppSecret, terminal or token
-	ErrNotFound     = domain.ErrNotFound     // 404
+	ErrUnauthorized = domain.ErrUnauthorized // 401: missing or inactive merchant key
+	ErrNotFound     = domain.ErrNotFound     // 404: unknown payment or order
 	ErrRateLimited  = domain.ErrRateLimited  // 429
 )
 

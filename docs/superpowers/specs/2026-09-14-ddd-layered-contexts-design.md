@@ -10,6 +10,17 @@ adapters and facades — and everything already built before the amendment — a
 because the facade's public method names and `NewX(port)` constructor signatures stay
 identical either way.
 
+**Amended 2026-09-14 (second, after all ten code tasks landed):** the user asked for the
+facade's own files (`types.go`, `errors.go`, `webhook.go`) to be "more architectural" too.
+Resolved as: one facade file per aggregate (mirroring `domain/<aggregate>`) instead of one
+file per kind of declaration; `types.go` is retired, its content redistributed into
+`access.go`/`checkout.go`/`card.go`/`subscription.go`/`qr.go`/`sandbox.go` plus the existing
+`errors.go` (trimmed to shared errors only) and `webhook.go` (gaining the webhook type
+aliases). Wallet gets the same split via a new `errors.go`, a `payment.go` in place of
+`types.go`, and a new `webhook.go`. This is a pure rename/regroup of type aliases — no
+exported identifier changed — so it needed no test changes and no adapter/domain/ports
+changes; see the Layout and Facades sections below for the resulting shape.
+
 ## Goal
 
 Restructure the SDK so each bounded context (Gateway, Wallet) is a folder with explicit
@@ -36,9 +47,14 @@ modification. That is the compatibility contract.
 ```
 bonum.go            facade (package bonum): Environment, Lang, Client, Option, New, Close,
                     Authenticate, Refresh
-types.go            facade: type aliases for every exported Gateway domain and application type
-errors.go           facade: sentinel error vars + error type aliases
-webhook.go          facade: ChecksumHeader, Checksum, ParseWebhook wrappers
+errors.go           facade: errors shared by every aggregate (ErrInvalidInput, ErrUnauthorized,
+                    ErrNotFound, ErrRateLimited, APIError, ValidationError)
+access.go, checkout.go, card.go, subscription.go, qr.go, sandbox.go
+                    facade, one file per aggregate: that aggregate's type aliases, its
+                    Service alias, and any error specific to it (ErrDeclined/DeclinedError
+                    live in card.go, not errors.go)
+webhook.go          facade: webhook type aliases, ErrBadChecksum/ErrUnknownEvent,
+                    ChecksumHeader, Checksum, ParseWebhook wrapper
 
 gateway/
   CONTEXT.md        moved from the repo root, unchanged
@@ -68,7 +84,13 @@ gateway/
 
 wallet/
   wallet.go         facade (package wallet): Environment, Client, Option, New, Close, the
-                    six payment methods, aliases, error vars, webhook wrappers
+                    six payment methods
+  errors.go         facade: errors shared by the Payment aggregate (ErrInvalidInput,
+                    ErrUnauthorized, ErrNotFound, ErrRateLimited, APIError, ValidationError)
+  payment.go        facade: Payment aggregate type aliases (Status, ProcessApplePayInput,
+                    Payment, AwaitResult, MaxAwaitTimeout, ...)
+  webhook.go        facade: webhook type alias, ErrMissingSignature/ErrTimestampExpired/
+                    ErrSignatureMismatch, Sign, ParseWebhook wrapper
   CONTEXT.md        unchanged
   domain/           package domain: ErrInvalidInput, ErrUnauthorized, ErrNotFound,
                     ErrRateLimited, APIError, ValidationError, Invalid
@@ -244,9 +266,17 @@ adapter setters), then constructs the application services and exposes them as t
 `Invoices`, `Cards`, `Subscriptions`, `QR`, `Sandbox`. Service types are aliases
 (`type InvoiceService = application.Invoices`). `Environment` and `Lang` stay facade types.
 
-`types.go` carries one alias line per exported domain type, grouped by aggregate. Sentinel
-errors are re-exported as `var ErrX = domain.ErrX` so `errors.Is` identity holds. Function
-wrappers (`ParseWebhook`, `Checksum`, wallet `Sign`, `ParseWebhook`) keep their doc comments.
+The facade's own files are split one per aggregate, mirroring `domain/<aggregate>`:
+`access.go`, `checkout.go`, `card.go`, `subscription.go`, `qr.go`, `sandbox.go`, `webhook.go`
+(plus `bonum.go` for the `Client` itself). Each carries that aggregate's type aliases, its
+`Service` alias, and any error specific to it — `ErrDeclined`/`DeclinedError` in `card.go`,
+`ErrBadChecksum`/`ErrUnknownEvent` in `webhook.go`. `errors.go` keeps only what every
+aggregate shares: `ErrInvalidInput`, `ErrUnauthorized`, `ErrNotFound`, `ErrRateLimited`,
+`APIError`, `ValidationError`. All errors are re-exported as `var ErrX = domain.ErrX` (or the
+aggregate package's own sentinel) so `errors.Is` identity holds. Function wrappers
+(`ParseWebhook`, `Checksum`, wallet `Sign`, `ParseWebhook`) keep their doc comments. Wallet
+mirrors this with `errors.go` (shared), `payment.go` (the one non-webhook aggregate), and
+`webhook.go`.
 
 `wallet.Client` keeps its flat method set; each method delegates to `application.Payments`.
 

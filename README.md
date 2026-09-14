@@ -187,15 +187,49 @@ wallet Merchant Key and Signing Secret are issued by Bonum at onboarding.
 
 ## Layout
 
+Each bounded context is layered, with imports pointing inward (`tests/architecture`
+enforces it). Callers only ever import `bonum` and `wallet`; the layers are how the SDK is
+built, not how it is used.
+
 ```
-bonum.go, invoice.go, card.go, subscription.go, qr.go, sandbox.go, webhook.go, errors.go, auth.go
-                       Gateway context: one file per aggregate, CONTEXT.md is its glossary
-wallet/                Wallet context: Apple Pay / Google Pay, own CONTEXT.md
-internal/rest/         HTTP execution adapter shared by both contexts
+bonum.go            Client, Environment, Lang, Option, New, Close, Authenticate, Refresh
+errors.go            errors shared by every aggregate: ErrInvalidInput, ErrUnauthorized,
+                     ErrNotFound, ErrRateLimited, APIError, ValidationError
+access.go, checkout.go, card.go, subscription.go, qr.go, sandbox.go
+                     one facade file per aggregate: its type aliases, its Service alias, and
+                     any error specific to it (ErrDeclined/DeclinedError in card.go)
+webhook.go           webhook type aliases, ErrBadChecksum/ErrUnknownEvent, Checksum, ParseWebhook
+gateway/CONTEXT.md   Gateway glossary
+gateway/domain/      errors shared by the context, then one package per aggregate:
+                     access, checkout, card, subscription, qr, webhook
+gateway/ports/       interfaces the use cases call (one per aggregate)
+gateway/application/ CQRS-lite: commands/<aggregate> and queries/<aggregate> hold one
+                     Command/Query + Handler per use case; the package root holds one facade
+                     struct per aggregate (Access, Invoices, Cards, Subscriptions, QR,
+                     Sandbox) that keeps the old per-aggregate method names
+gateway/adapters/httpapi/
+                     resty implementation of every port: token lifecycle, envelope,
+                     error decoding, decline detection
+
+wallet/wallet.go     Client, Environment, Option, New, Close, the six payment methods
+wallet/errors.go     errors shared by the Payment aggregate: ErrInvalidInput, ErrUnauthorized,
+                     ErrNotFound, ErrRateLimited, APIError, ValidationError
+wallet/payment.go    Payment aggregate type aliases (Status, ProcessApplePayInput, Payment, ...)
+wallet/webhook.go    webhook type alias, ErrMissingSignature/ErrTimestampExpired/
+                     ErrSignatureMismatch, Sign, ParseWebhook
+wallet/CONTEXT.md    Wallet glossary
+wallet/domain/, ports/, application/, adapters/httpapi/
+                     same layering (and same CQRS-lite application split) for
+                     Apple Pay / Google Pay
+
+internal/rest/       HTTP execution adapter shared by both contexts
 tests/gateway, tests/wallet
-                       External test packages that cross only the exported interface
-tests/smoke            Manual run against the sandbox
-docs/adr/              Why the API is shaped this way
+                     fake-server suites that cross only the facade
+tests/*/domain, tests/*/application
+                     invariant and fake-port tests, no HTTP
+tests/architecture   import-direction rule
+tests/smoke          manual run against the sandbox
+docs/adr/            why the API is shaped this way
 ```
 
 ## Smoke test

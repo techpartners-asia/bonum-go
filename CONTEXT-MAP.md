@@ -5,7 +5,7 @@ that share nothing but an internal HTTP adapter.
 
 ## Contexts
 
-- [Gateway](./CONTEXT.md) (package `bonum`): hosted checkout invoices, card tokens and
+- [Gateway](./gateway/CONTEXT.md) (package `bonum`): hosted checkout invoices, card tokens and
   purchases, subscriptions, QR invoices, and the gateway webhook.
 - [Wallet](./wallet/CONTEXT.md) (package `wallet`): Apple Pay and Google Pay payments
   submitted with an encrypted wallet token, and the wallet webhook.
@@ -20,3 +20,8 @@ that share nothing but an internal HTTP adapter.
 - **Merchant backend → both**: the merchant's server is the only caller. Browsers and
   mobile apps never hold either credential; they redirect to a Follow-up Link (Gateway) or
   forward a Wallet Token (Wallet).
+- **Inside each context**: `domain` (aggregates, invariants, errors) ← `ports` (interfaces
+  the use cases need) ← `application` (CQRS-lite: one Command/Query + Handler per use case,
+  fronted by one facade struct per aggregate) ← `adapters/httpapi` (Bonum's HTTP endpoints).
+  The root `bonum` package and the `wallet` package are facades, one file per aggregate, that
+  compose these and re-export the domain types. `tests/architecture` enforces the direction.
