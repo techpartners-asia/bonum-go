@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.2
 
 - `ParseWebhook` no longer refuses a genuine delivery over whitespace. Bonum signs
   `JSON.toJson(body, prettyPrint = false)` — a compact re-serialisation — not the bytes it
