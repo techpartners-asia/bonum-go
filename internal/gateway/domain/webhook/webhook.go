@@ -2,12 +2,14 @@
 package webhook
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/techpartners-asia/bonum-go/internal/gateway/domain/checkout"
 )
@@ -154,7 +156,7 @@ func Checksum(body []byte, checksumKey string) string {
 // Parse verifies a delivery against the x-checksum-v2 header and decodes it into the Event
 // for its type. Pass the body bytes exactly as received; re-serialising changes the hash.
 func Parse(body []byte, checksumHeader, checksumKey string) (Event, error) {
-	if !hmac.Equal([]byte(Checksum(body, checksumKey)), []byte(checksumHeader)) {
+	if !verify(body, checksumHeader, checksumKey) {
 		return nil, ErrBadChecksum
 	}
 	var h EventHeader
@@ -172,6 +174,33 @@ func Parse(body []byte, checksumHeader, checksumKey string) (Event, error) {
 		return decodeEvent[SubscriptionPaymentEvent](body)
 	}
 	return nil, fmt.Errorf("%w: %q", ErrUnknownEvent, h.Type)
+}
+
+// verify checks the header against the raw body and, failing that, against the body with
+// insignificant whitespace removed.
+//
+// Bonum does not sign the bytes it sends: its reference code signs
+// JSON.toJson(requestBody, prettyPrint = false), a compact re-serialisation. When the wire
+// body is that same string the raw check passes; when it arrives with any whitespace
+// (pretty-printed, a trailing newline) only the compact form matches. json.Compact keeps
+// key order and number spelling, so it reproduces Bonum's string without guessing — and
+// the key is still required, so this widens nothing for a forger.
+//
+// The header is compared case-insensitively: hex is hex, and an uppercase spelling of the
+// right MAC is not a forgery.
+func verify(body []byte, checksumHeader, checksumKey string) bool {
+	got := []byte(strings.ToLower(strings.TrimSpace(checksumHeader)))
+	if len(got) == 0 {
+		return false
+	}
+	if hmac.Equal([]byte(Checksum(body, checksumKey)), got) {
+		return true
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, body); err != nil || bytes.Equal(compact.Bytes(), body) {
+		return false
+	}
+	return hmac.Equal([]byte(Checksum(compact.Bytes(), checksumKey)), got)
 }
 
 func decodeEvent[T any, PT interface {

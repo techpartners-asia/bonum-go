@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- `ParseWebhook` no longer refuses a genuine delivery over whitespace. Bonum signs
+  `JSON.toJson(body, prettyPrint = false)` — a compact re-serialisation — not the bytes it
+  sends, so a body that arrived pretty-printed or with a trailing newline failed with
+  `ErrBadChecksum` even with the right key. The raw bytes are still tried first; on a
+  mismatch the body is compacted (`json.Compact`: key order and number spelling kept) and
+  checked again. The key is required either way.
+- The `x-checksum-v2` value is trimmed and compared case-insensitively; an uppercase-hex
+  spelling of the right MAC is accepted.
+
 ## v0.2.0
 
 **Breaking change from v0.1.0.** The whole public API was redesigned: flat top-level

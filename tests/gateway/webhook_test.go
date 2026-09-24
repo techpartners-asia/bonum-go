@@ -2,6 +2,7 @@ package gateway_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	bonum "github.com/techpartners-asia/bonum-go"
@@ -21,9 +22,14 @@ func TestParseWebhookRejectsBadChecksum(t *testing.T) {
 	if !errors.Is(err, bonum.ErrBadChecksum) {
 		t.Fatalf("want ErrBadChecksum, got %v", err)
 	}
-	_, err = bonum.ParseWebhook([]byte(paymentBody+" "), sign(paymentBody), checksumKey)
+	tampered := strings.Replace(paymentBody, `"amount":10000.00`, `"amount":10.00`, 1)
+	_, err = bonum.ParseWebhook([]byte(tampered), sign(paymentBody), checksumKey)
 	if !errors.Is(err, bonum.ErrBadChecksum) {
 		t.Fatalf("tampered body: want ErrBadChecksum, got %v", err)
+	}
+	// Whitespace is not tampering: Bonum signs the compact serialisation, not the wire bytes.
+	if _, err = bonum.ParseWebhook([]byte(paymentBody+"\n"), sign(paymentBody), checksumKey); err != nil {
+		t.Fatalf("trailing newline on a compact-signed body: %v", err)
 	}
 }
 
