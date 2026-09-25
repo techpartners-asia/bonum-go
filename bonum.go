@@ -64,6 +64,13 @@ func WithTimeout(d time.Duration) Option { return func(c *Client) { c.api.SetTim
 // WithTransport replaces the HTTP transport, e.g. to record outbound calls.
 func WithTransport(rt http.RoundTripper) Option { return func(c *Client) { c.api.SetTransport(rt) } }
 
+// WithTokenStore shares the Terminal's bearer token through store (Redis, a database row)
+// so every process on the same Terminal reuses one token until it expires, instead of each
+// asking auth/create - which Bonum rate-limits per Terminal ("Use previous token").
+func WithTokenStore(store TokenStore) Option {
+	return func(c *Client) { c.api.SetTokenStore(store) }
+}
+
 // New creates a Client. appSecret and terminalID come from the Bonum merchant portal.
 func New(env Environment, appSecret, terminalID string, opts ...Option) *Client {
 	api := httpapi.New(string(env), appSecret, terminalID)
