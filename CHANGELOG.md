@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.3
+
+- `WithTokenStore` shares the Terminal's bearer token through a caller-supplied
+  `TokenStore` (Redis, a database row). Bonum rate-limits `auth/create` per Terminal and
+  answers 429 "Use previous token. Do not get token too frequently" when every replica,
+  restart and deploy asks for its own. With a store the client uses the shared token until
+  it expires, then refreshes (or, last, creates) one and saves it for the others. A 429 on
+  create adopts a token another process has just stored. Store errors never fail a call.
+- A 401/403 on a gateway call drops the token that was sent (and clears it from the store
+  when it still holds it), so a revoked token is not reused until its nominal expiry.
+
 ## v0.2.2
 
 - `ParseWebhook` no longer refuses a genuine delivery over whitespace. Bonum signs

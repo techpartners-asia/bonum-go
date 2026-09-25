@@ -5,9 +5,12 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain"
+	"github.com/techpartners-asia/bonum-go/internal/gateway/domain/access"
 	"github.com/techpartners-asia/bonum-go/internal/rest"
 	"resty.dev/v3"
 )
@@ -39,6 +42,9 @@ func (c *Client) SetTimeout(d time.Duration)        { c.rest.SetTimeout(d) }
 func (c *Client) SetTransport(rt http.RoundTripper) { c.rest.SetTransport(rt) }
 func (c *Client) SetLanguage(lang string)           { c.lang = lang }
 func (c *Client) Close() error                      { return c.rest.Close() }
+
+// SetTokenStore shares the Terminal's token through store; see access.TokenStore.
+func (c *Client) SetTokenStore(store access.TokenStore) { c.tokens.store = store }
 
 // envelope is the wrapper every mpay-service endpoint returns. It is a transport detail:
 // callers get Data and never see it.
@@ -74,6 +80,9 @@ func call[T any](ctx context.Context, c *Client, method, path string, opts ...re
 	}
 	var out T
 	if err := c.rest.Do(req, method, path, &out); err != nil {
+		if errors.Is(err, domain.ErrUnauthorized) {
+			c.tokens.Invalidate(ctx, token)
+		}
 		return nil, err
 	}
 	return &out, nil
