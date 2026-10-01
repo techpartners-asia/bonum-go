@@ -17,4 +17,6 @@ type (
 	APIError = domain.APIError
 	// ValidationError is returned before any network call when an input violates an invariant.
 	ValidationError = domain.ValidationError
+	// ResponseError is returned when Bonum answers 2xx with a body that is not the documented JSON.
+	ResponseError = domain.ResponseError
 )

@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.2.4
+
+- The wallet client decodes a 2xx body as JSON whatever its `Content-Type`. resty decodes
+  `SetResult` only for a body labelled JSON and otherwise leaves the result zero with no
+  error, so a live `/api/v2/payment/process/google` answer reached callers as a
+  `ProcessResponse` with an empty `paymentId`. A wallet 2xx whose body is empty or not
+  JSON is now a `*wallet.ResponseError` carrying the status, `Content-Type` and body.
+- The gateway client also decodes regardless of `Content-Type`, but keeps its lenient
+  behaviour for an undecodable 2xx body (zero result, no error).
+
 ## v0.2.3
 
 - `WithTokenStore` shares the Terminal's bearer token through a caller-supplied

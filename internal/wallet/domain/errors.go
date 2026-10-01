@@ -46,6 +46,24 @@ func (e *APIError) Is(target error) bool {
 	return false
 }
 
+// ResponseError is returned when Bonum answers 2xx with a body that is empty or not the
+// documented JSON. Body is what Bonum sent, so the cause can be read off the error.
+type ResponseError struct {
+	StatusCode  int
+	ContentType string
+	Body        string
+	Err         error // the JSON error; nil when the body was empty
+}
+
+func (e *ResponseError) Error() string {
+	if e.Err == nil {
+		return fmt.Sprintf("bonum wallet: %d response with an empty body", e.StatusCode)
+	}
+	return fmt.Sprintf("bonum wallet: %d response not decodable (%s): %v: %s", e.StatusCode, e.ContentType, e.Err, e.Body)
+}
+
+func (e *ResponseError) Unwrap() error { return e.Err }
+
 // ValidationError is returned before any network call when an input violates an invariant.
 // Field names the invalid Go struct field verbatim (e.g. "OrderID") when the check is on an
 // input struct's own field, since Validate() is itself part of the public API and every

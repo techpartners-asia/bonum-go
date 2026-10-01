@@ -7,6 +7,9 @@
 package rest
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -21,15 +24,44 @@ type Client struct {
 	baseURL string
 	http    *resty.Client
 	onError ErrorFunc
+	strict  bool
 }
 
-func New(baseURL string, timeout time.Duration, onError ErrorFunc) *Client {
-	return &Client{
+// Option adjusts a Client at construction.
+type Option func(*Client)
+
+// StrictDecoding makes a 2xx body that is empty or not JSON for the result a *DecodeError
+// instead of a zero-valued result. The wallet API documents a JSON body on every 2xx.
+func StrictDecoding() Option { return func(c *Client) { c.strict = true } }
+
+func New(baseURL string, timeout time.Duration, onError ErrorFunc, opts ...Option) *Client {
+	c := &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		http:    resty.New().SetTimeout(timeout).SetMethodDeleteAllowPayload(true),
 		onError: onError,
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
+
+// DecodeError is a 2xx response whose body could not be decoded into the result.
+type DecodeError struct {
+	StatusCode  int
+	ContentType string
+	Body        string
+	Err         error // nil when the body was empty
+}
+
+func (e *DecodeError) Error() string {
+	if e.Err == nil {
+		return fmt.Sprintf("%d response with an empty body", e.StatusCode)
+	}
+	return fmt.Sprintf("%d response not decodable (%s): %v", e.StatusCode, e.ContentType, e.Err)
+}
+
+func (e *DecodeError) Unwrap() error { return e.Err }
 
 func (c *Client) BaseURL() string                   { return c.baseURL }
 func (c *Client) SetBaseURL(u string)               { c.baseURL = strings.TrimRight(u, "/") }
@@ -44,10 +76,11 @@ func (c *Client) R() *resty.Request {
 
 // Do executes req. path is joined to the base URL unless it is already absolute.
 // A 2xx body is decoded into result (when non-nil); anything else becomes onError(status, body).
+//
+// The body is decoded as JSON whatever its Content-Type. resty's SetResult decodes only a
+// body labelled JSON and silently leaves result zero otherwise, which turned a live
+// /process/google answer into an empty paymentId with no error.
 func (c *Client) Do(req *resty.Request, method, path string, result any) error {
-	if result != nil {
-		req.SetResult(result)
-	}
 	if !isAbsolute(path) {
 		path = c.baseURL + path
 	}
@@ -58,7 +91,26 @@ func (c *Client) Do(req *resty.Request, method, path string, result any) error {
 	if res.StatusCode() >= http.StatusBadRequest {
 		return c.onError(res.StatusCode(), res.String())
 	}
-	return nil
+	if result == nil {
+		return nil
+	}
+	data := bytes.TrimSpace(res.Bytes())
+	var decodeErr error
+	if len(data) > 0 {
+		decodeErr = json.Unmarshal(data, result)
+		if decodeErr == nil {
+			return nil
+		}
+	}
+	if !c.strict {
+		return nil
+	}
+	return &DecodeError{
+		StatusCode:  res.StatusCode(),
+		ContentType: res.Header().Get("Content-Type"),
+		Body:        string(data),
+		Err:         decodeErr,
+	}
 }
 
 func isAbsolute(u string) bool {

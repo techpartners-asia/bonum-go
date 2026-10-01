@@ -4,6 +4,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -38,7 +39,7 @@ type Client struct {
 
 // New creates an adapter for baseURL authenticated with the Merchant Key.
 func New(baseURL, merchantKey string) *Client {
-	return &Client{rest: rest.New(baseURL, defaultTimeout, decodeError), merchantKey: merchantKey}
+	return &Client{rest: rest.New(baseURL, defaultTimeout, decodeError, rest.StrictDecoding()), merchantKey: merchantKey}
 }
 
 func (c *Client) SetBaseURL(u string)               { c.rest.SetBaseURL(u) }
@@ -120,6 +121,10 @@ func call[T any](ctx context.Context, c *Client, method, path string, opts ...re
 	}
 	var out T
 	if err := c.rest.Do(req, method, path, &out); err != nil {
+		var de *rest.DecodeError
+		if errors.As(err, &de) {
+			return nil, &domain.ResponseError{StatusCode: de.StatusCode, ContentType: de.ContentType, Body: de.Body, Err: de.Err}
+		}
 		return nil, err
 	}
 	return &out, nil
