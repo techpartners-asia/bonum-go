@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.6
+
+- `ProcessResponse.FailureReason`. The V2 docs say a process call always answers
+  PENDING, but Bonum also answers 200 `{"paymentId": null, "status": "FAILED",
+  "failureReason": "..."}` when it refuses the request outright (seen on testpsp:
+  "Google Pay config not found for merchant. (merch.g.1)"). No payment exists at Bonum
+  then; the reason was previously dropped.
+- Correction to v0.2.5: the empty `paymentId` it was written for was this FAILED
+  answer, not an undecoded gzip body; Bonum does send `Content-Encoding: gzip` and resty
+  inflated it. The magic-number inflation stays as a guard.
+
 ## v0.2.5
 
 - A gzip response body that arrives without `Content-Encoding` is inflated before it is

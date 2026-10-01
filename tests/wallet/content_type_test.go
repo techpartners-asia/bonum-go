@@ -58,8 +58,8 @@ func TestProcessGooglePay_undecodableSuccessIsAnError(t *testing.T) {
 	}
 }
 
-// Live /process/google answered 200 "application/json; charset=utf-8" with a gzip body
-// and no Content-Encoding, so neither resty nor net/http inflated it.
+// A gzip body without Content-Encoding is inflated: resty sends its own Accept-Encoding,
+// so neither it nor net/http would otherwise decompress it.
 func TestProcessGooglePay_inflatesGzipWithoutContentEncoding(t *testing.T) {
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
@@ -95,5 +95,20 @@ func TestProcessGooglePay_inflatesGzipErrorBody(t *testing.T) {
 	var api *wallet.APIError
 	if !errors.As(err, &api) || api.Message != "token is invalid" {
 		t.Fatalf("err = %#v, want APIError with Bonum's message", err)
+	}
+}
+
+// Bonum answered a Google Pay submit 200 FAILED with a null paymentId and a reason
+// (testpsp, 2026-10-01). The reason must reach the caller.
+func TestProcessGooglePay_failedAnswerCarriesReason(t *testing.T) {
+	c := clientAnswering(t, "application/json; charset=utf-8",
+		`{"paymentId":null,"orderId":"ORD-1","status":"FAILED","failureReason":"Google Pay config not found for merchant. (merch.g.1)"}`)
+	got, err := c.ProcessGooglePay(ctx, googleIn)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if got.PaymentID != "" || got.Status != wallet.StatusFailed || got.FailureReason == nil ||
+		*got.FailureReason != "Google Pay config not found for merchant. (merch.g.1)" {
+		t.Fatalf("got %+v, want FAILED with the reason", got)
 	}
 }

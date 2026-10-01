@@ -120,8 +120,9 @@ const maxInflated = 1 << 20
 
 // inflate decompresses a gzip body that arrived without Content-Encoding. resty sends
 // its own Accept-Encoding, which turns off net/http's transparent decompression, and
-// inflates only when Content-Encoding says gzip; live /process/google answered gzip with
-// no such header. A body without the gzip magic number is returned unchanged.
+// inflates only when Content-Encoding says gzip. Bonum does send that header (seen on
+// /process/google), so this is a guard rather than a fix for an observed answer. A body
+// without the gzip magic number is returned unchanged.
 func inflate(data []byte) ([]byte, error) {
 	if len(data) < 2 || data[0] != 0x1f || data[1] != 0x8b {
 		return data, nil

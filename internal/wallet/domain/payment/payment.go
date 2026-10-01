@@ -88,14 +88,18 @@ type (
 		BranchID     string   `json:"branch_id,omitempty"`
 	}
 
-	// ProcessResponse is returned by both process endpoints. Status is always PENDING here.
+	// ProcessResponse is returned by both process endpoints. The docs say Status is always
+	// PENDING here, but Bonum also answers 200 with Status FAILED, a null PaymentID and a
+	// FailureReason when it refuses the request outright, e.g. "Google Pay config not
+	// found for merchant. (merch.g.1)". No payment exists at Bonum in that case.
 	ProcessResponse struct {
-		PaymentID  string `json:"paymentId"`
-		OrderID    string `json:"orderId"`
-		Status     Status `json:"status"`
-		AcceptedAt string `json:"acceptedAt"` // ISO 8601
-		StatusURL  string `json:"statusUrl"`  // Absolute URL
-		AwaitURL   string `json:"awaitUrl"`   // Absolute URL; see AwaitPayment
+		PaymentID     string  `json:"paymentId"`
+		OrderID       string  `json:"orderId"`
+		Status        Status  `json:"status"`
+		FailureReason *string `json:"failureReason"` // Set when Status is FAILED
+		AcceptedAt    string  `json:"acceptedAt"`    // ISO 8601
+		StatusURL     string  `json:"statusUrl"`     // Absolute URL
+		AwaitURL      string  `json:"awaitUrl"`      // Absolute URL; see AwaitPayment
 	}
 
 	// Payment is the full record returned by GetPayment and LookupByOrderID.
