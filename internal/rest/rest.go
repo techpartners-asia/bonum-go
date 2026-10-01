@@ -8,8 +8,10 @@ package rest
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -88,15 +90,15 @@ func (c *Client) Do(req *resty.Request, method, path string, result any) error {
 	if err != nil {
 		return err
 	}
+	data, decodeErr := inflate(res.Bytes())
 	if res.StatusCode() >= http.StatusBadRequest {
-		return c.onError(res.StatusCode(), res.String())
+		return c.onError(res.StatusCode(), strings.TrimSpace(string(data)))
 	}
 	if result == nil {
 		return nil
 	}
-	data := bytes.TrimSpace(res.Bytes())
-	var decodeErr error
-	if len(data) > 0 {
+	data = bytes.TrimSpace(data)
+	if decodeErr == nil && len(data) > 0 {
 		decodeErr = json.Unmarshal(data, result)
 		if decodeErr == nil {
 			return nil
@@ -111,6 +113,32 @@ func (c *Client) Do(req *resty.Request, method, path string, result any) error {
 		Body:        string(data),
 		Err:         decodeErr,
 	}
+}
+
+// maxInflated bounds a decompressed body; every documented response is a few hundred bytes.
+const maxInflated = 1 << 20
+
+// inflate decompresses a gzip body that arrived without Content-Encoding. resty sends
+// its own Accept-Encoding, which turns off net/http's transparent decompression, and
+// inflates only when Content-Encoding says gzip; live /process/google answered gzip with
+// no such header. A body without the gzip magic number is returned unchanged.
+func inflate(data []byte) ([]byte, error) {
+	if len(data) < 2 || data[0] != 0x1f || data[1] != 0x8b {
+		return data, nil
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return data, fmt.Errorf("gzip body: %w", err)
+	}
+	defer zr.Close()
+	out, err := io.ReadAll(io.LimitReader(zr, maxInflated+1))
+	switch {
+	case err != nil:
+		return data, fmt.Errorf("gzip body: %w", err)
+	case len(out) > maxInflated:
+		return data, fmt.Errorf("gzip body larger than %d bytes", maxInflated)
+	}
+	return out, nil
 }
 
 func isAbsolute(u string) bool {

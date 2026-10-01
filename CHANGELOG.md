@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.2.5
+
+- A gzip response body that arrives without `Content-Encoding` is inflated before it is
+  decoded. resty sends its own `Accept-Encoding: gzip, deflate`, which turns off
+  net/http's transparent decompression, and inflates only when `Content-Encoding` says
+  so. Live `/api/v2/payment/process/google` answered 200 `application/json` with a gzip
+  body and no `Content-Encoding`: v0.2.3 returned an empty `paymentId`, v0.2.4 a
+  `*wallet.ResponseError`. Detection is by the gzip magic number, so a plain body is
+  untouched; the inflated size is capped at 1 MiB.
+
 ## v0.2.4
 
 - The wallet client decodes a 2xx body as JSON whatever its `Content-Type`. resty decodes

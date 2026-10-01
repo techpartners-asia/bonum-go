@@ -1,6 +1,8 @@
 package wallet_test
 
 import (
+	"bytes"
+	"compress/gzip"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -53,5 +55,45 @@ func TestProcessGooglePay_undecodableSuccessIsAnError(t *testing.T) {
 	var re *wallet.ResponseError
 	if !errors.As(err, &re) || re.StatusCode != http.StatusOK || re.Body != "<html>gateway</html>" {
 		t.Fatalf("err = %#v, want *wallet.ResponseError carrying status and body", err)
+	}
+}
+
+// Live /process/google answered 200 "application/json; charset=utf-8" with a gzip body
+// and no Content-Encoding, so neither resty nor net/http inflated it.
+func TestProcessGooglePay_inflatesGzipWithoutContentEncoding(t *testing.T) {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	_, _ = zw.Write([]byte(`{"paymentId":"pay-1","orderId":"ORD-1","status":"PENDING"}`))
+	_ = zw.Close()
+	c := clientAnswering(t, "application/json; charset=utf-8", buf.String())
+
+	got, err := c.ProcessGooglePay(ctx, googleIn)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if got.PaymentID != "pay-1" || got.Status != wallet.StatusPending {
+		t.Fatalf("got %+v, want paymentId pay-1 PENDING", got)
+	}
+}
+
+// A gzip error body must still yield Bonum's message.
+func TestProcessGooglePay_inflatesGzipErrorBody(t *testing.T) {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	_, _ = zw.Write([]byte(`{"statusCode":400,"message":"token is invalid","error":"Bad Request"}`))
+	_ = zw.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write(buf.Bytes())
+	}))
+	t.Cleanup(srv.Close)
+	c := wallet.New(wallet.Sandbox, "mk_test_123", wallet.WithBaseURL(srv.URL))
+	t.Cleanup(func() { c.Close() })
+
+	_, err := c.ProcessGooglePay(ctx, googleIn)
+	var api *wallet.APIError
+	if !errors.As(err, &api) || api.Message != "token is invalid" {
+		t.Fatalf("err = %#v, want APIError with Bonum's message", err)
 	}
 }
